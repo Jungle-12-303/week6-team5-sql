@@ -10,7 +10,17 @@
 static int ensure_directory(const char *path);
 static int write_text_file(const char *path, const char *text);
 static int file_contains_text(const char *path, const char *needle);
+static int file_equals_text(const char *path, const char *expected_text);
 static int capture_run_program(const AppConfig *config, const char *output_path);
+static int create_temp_workspace(char *base_path,
+                                 size_t base_size,
+                                 char *schema_dir,
+                                 size_t schema_size,
+                                 char *data_dir,
+                                 size_t data_size,
+                                 char *index_dir,
+                                 size_t index_size,
+                                 const char *prefix);
 
 static int test_parse_arguments_success(void)
 {
@@ -215,35 +225,42 @@ static int test_parse_where_limit_fail(void)
 static int test_run_program_success(void)
 {
     AppConfig config;
-    const char *base_dir;
-    const char *schema_dir;
-    const char *data_dir;
-    const char *index_dir;
-    const char *path;
-    const char *output_path;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char index_dir[256];
+    char path[256];
+    char output_path[256];
 
-    base_dir = "/tmp/sqlproc_run_program_success";
-    schema_dir = "/tmp/sqlproc_run_program_success/schemas";
-    data_dir = "/tmp/sqlproc_run_program_success/data";
-    index_dir = "/tmp/sqlproc_run_program_success/indexes";
-    path = "/tmp/sqlproc_run_program_success/input.sql";
-    output_path = "/tmp/sqlproc_run_program_success/output.txt";
-
-    if (!ensure_directory(base_dir) ||
-        !ensure_directory(schema_dir) ||
-        !ensure_directory(data_dir) ||
-        !ensure_directory(index_dir)) {
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               index_dir,
+                               sizeof(index_dir),
+                               "sqlproc_run_program_success_")) {
         return 0;
     }
 
-    if (!write_text_file("/tmp/sqlproc_run_program_success/schemas/users.schema",
-                         "id:int,name:string\n")) {
-        return 0;
-    }
+    snprintf(path, sizeof(path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
 
-    if (!write_text_file("/tmp/sqlproc_run_program_success/data/users.csv",
-                         "id,name\n1,kim\n")) {
-        return 0;
+    {
+        char schema_path[256];
+        char data_path[256];
+
+        snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+        snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+        if (!write_text_file(schema_path, "id:int,name:string\n")) {
+            return 0;
+        }
+
+        if (!write_text_file(data_path, "id,name\n1,kim\n")) {
+            return 0;
+        }
     }
 
     if (!write_text_file(path, "SELECT * FROM users;")) {
@@ -307,6 +324,23 @@ static int file_contains_text(const char *path, const char *needle)
     return strstr(buffer, needle) != NULL;
 }
 
+static int file_equals_text(const char *path, const char *expected_text)
+{
+    char buffer[2048];
+    FILE *file;
+    size_t size;
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        return 0;
+    }
+
+    size = fread(buffer, 1, sizeof(buffer) - 1, file);
+    fclose(file);
+    buffer[size] = '\0';
+    return strcmp(buffer, expected_text) == 0;
+}
+
 static int capture_run_program(const AppConfig *config, const char *output_path)
 {
     FILE *file;
@@ -339,6 +373,30 @@ static int capture_run_program(const AppConfig *config, const char *output_path)
     return result == 0;
 }
 
+static int create_temp_workspace(char *base_path,
+                                 size_t base_size,
+                                 char *schema_dir,
+                                 size_t schema_size,
+                                 char *data_dir,
+                                 size_t data_size,
+                                 char *index_dir,
+                                 size_t index_size,
+                                 const char *prefix)
+{
+    snprintf(base_path, base_size, "/tmp/%sXXXXXX", prefix);
+    if (mkdtemp(base_path) == NULL) {
+        return 0;
+    }
+
+    snprintf(schema_dir, schema_size, "%s/schemas", base_path);
+    snprintf(data_dir, data_size, "%s/data", base_path);
+    snprintf(index_dir, index_size, "%s/indexes", base_path);
+
+    return ensure_directory(schema_dir) &&
+           ensure_directory(data_dir) &&
+           ensure_directory(index_dir);
+}
+
 static int test_parse_empty_sql_fail(void)
 {
     TokenList tokens;
@@ -360,29 +418,35 @@ static int test_insert_and_select_where_execution(void)
 {
     AppConfig insert_config;
     AppConfig select_config;
-    const char *base_dir;
-    const char *schema_dir;
-    const char *data_dir;
-    const char *index_dir;
-    const char *insert_sql_path;
-    const char *select_sql_path;
-    const char *output_path;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char index_dir[256];
+    char insert_sql_path[256];
+    char select_sql_path[256];
+    char output_path[256];
+    char schema_path[256];
+    char data_path[256];
 
-    base_dir = "/tmp/sqlproc_where_executor_test";
-    schema_dir = "/tmp/sqlproc_where_executor_test/schemas";
-    data_dir = "/tmp/sqlproc_where_executor_test/data";
-    index_dir = "/tmp/sqlproc_where_executor_test/indexes";
-    insert_sql_path = "/tmp/sqlproc_where_executor_test/insert.sql";
-    select_sql_path = "/tmp/sqlproc_where_executor_test/select.sql";
-    output_path = "/tmp/sqlproc_where_executor_test/select.out";
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               index_dir,
+                               sizeof(index_dir),
+                               "sqlproc_where_executor_test_")) {
+        return 0;
+    }
 
-    ensure_directory(base_dir);
-    ensure_directory(schema_dir);
-    ensure_directory(data_dir);
-    ensure_directory(index_dir);
+    snprintf(insert_sql_path, sizeof(insert_sql_path), "%s/insert.sql", base_dir);
+    snprintf(select_sql_path, sizeof(select_sql_path), "%s/select.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/select.out", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
 
-    if (!write_text_file("/tmp/sqlproc_where_executor_test/schemas/users.schema",
-                         "id:int,name:string,age:int\n")) {
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
         return 0;
     }
 
@@ -402,8 +466,7 @@ static int test_insert_and_select_where_execution(void)
         return 0;
     }
 
-    if (!file_contains_text("/tmp/sqlproc_where_executor_test/data/users.csv",
-                            "id,name,age\n1,kim,20\n2,lee,30\n")) {
+    if (!file_equals_text(data_path, "id,name,age\n1,kim,20\n2,lee,30\n")) {
         return 0;
     }
 
@@ -422,7 +485,7 @@ static int test_insert_and_select_where_execution(void)
         return 0;
     }
 
-    if (!file_contains_text(output_path, "name\tage\nlee\t30\n")) {
+    if (!file_equals_text(output_path, "name\tage\nlee\t30\n")) {
         return 0;
     }
 

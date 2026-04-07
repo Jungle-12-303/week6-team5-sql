@@ -70,6 +70,10 @@ int load_table_schema(const char *schema_dir,
     line[strcspn(line, "\r\n")] = '\0';
     cursor = line;
 
+    /*
+     * 한 줄 스키마를 쉼표와 콜론 기준으로 제자리에서 잘라 가며 읽습니다.
+     * 예: id:int,name:string -> [id:int] [name:string]
+     */
     while (*cursor != '\0') {
         char *colon;
         char lower_name[SQLPROC_MAX_NAME_LEN];

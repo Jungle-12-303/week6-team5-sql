@@ -8,6 +8,11 @@
 #define EXECUTOR_MAX_PATH_LEN 512
 #define EXECUTOR_MAX_ROW_LEN 1024
 
+static int parse_csv_line(const char *line,
+                          char values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
+                          int *value_count);
+static int parse_int_text(const char *text, long *value);
+
 static void set_runtime_error(ErrorInfo *error,
                               const char *message,
                               SourceLocation location)
@@ -114,12 +119,41 @@ static int ensure_data_file(const AppConfig *config,
                             ErrorInfo *error)
 {
     char path[EXECUTOR_MAX_PATH_LEN];
+    char line[EXECUTOR_MAX_ROW_LEN];
+    char header_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN];
+    int header_count;
     FILE *file;
     int i;
 
     build_table_path(path, sizeof(path), config->data_dir, schema->table_name, ".csv");
     file = fopen(path, "rb");
     if (file != NULL) {
+        if (fgets(line, sizeof(line), file) == NULL) {
+            fclose(file);
+            set_file_error(error, "기존 데이터 파일 헤더를 읽을 수 없습니다.");
+            return 0;
+        }
+
+        if (!parse_csv_line(line, header_values, &header_count)) {
+            fclose(file);
+            set_file_error(error, "기존 데이터 파일 헤더 형식이 잘못되었습니다.");
+            return 0;
+        }
+
+        if (header_count != schema->column_count) {
+            fclose(file);
+            set_file_error(error, "기존 데이터 파일 헤더가 스키마와 다릅니다.");
+            return 0;
+        }
+
+        for (i = 0; i < schema->column_count; i++) {
+            if (strcmp(header_values[i], schema->columns[i].name) != 0) {
+                fclose(file);
+                set_file_error(error, "기존 데이터 파일 헤더 순서가 스키마와 다릅니다.");
+                return 0;
+            }
+        }
+
         fclose(file);
         return 1;
     }
@@ -201,6 +235,18 @@ static int parse_csv_line(const char *line,
     return 1;
 }
 
+static int parse_int_text(const char *text, long *value)
+{
+    char *end_pointer;
+
+    if (text[0] == '\0') {
+        return 0;
+    }
+
+    *value = strtol(text, &end_pointer, 10);
+    return *end_pointer == '\0';
+}
+
 /*
  * 무엇을 하는가:
  * - CSV에서 읽은 문자열 값과 WHERE 절의 리터럴을 스키마 타입에 맞춰
@@ -230,8 +276,8 @@ static int compare_values(DataType data_type,
         long left_value;
         long right_value;
 
-        left_value = strtol(row_value, NULL, 10);
-        right_value = strtol(literal->text, NULL, 10);
+        parse_int_text(row_value, &left_value);
+        parse_int_text(literal->text, &right_value);
 
         if (left_value < right_value) {
             compare_result = -1;
@@ -270,6 +316,7 @@ static int row_matches_where(const TableSchema *schema,
 
     for (i = 0; i < where_clause->count; i++) {
         int column_index;
+        long unused_value;
 
         column_index = find_schema_column(schema, where_clause->items[i].column_name);
         if (column_index < 0) {
@@ -287,10 +334,52 @@ static int row_matches_where(const TableSchema *schema,
             return -1;
         }
 
+        if (schema->columns[column_index].type == DATA_TYPE_INT) {
+            if (values[column_index][0] == '\0') {
+                return 0;
+            }
+
+            if (!parse_int_text(values[column_index], &unused_value)) {
+                set_runtime_error(error,
+                                  "정수 컬럼에 숫자가 아닌 값이 저장되어 있습니다.",
+                                  where_clause->items[i].column_location);
+                return -1;
+            }
+        }
+
         if (!compare_values(schema->columns[column_index].type,
                             values[column_index],
                             where_clause->items[i].operator_type,
                             &where_clause->items[i].value)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int validate_where_clause(const TableSchema *schema,
+                                 const WhereClause *where_clause,
+                                 ErrorInfo *error)
+{
+    int i;
+
+    for (i = 0; i < where_clause->count; i++) {
+        int column_index;
+
+        column_index = find_schema_column(schema, where_clause->items[i].column_name);
+        if (column_index < 0) {
+            set_runtime_error(error,
+                              "WHERE 절의 컬럼이 스키마에 없습니다.",
+                              where_clause->items[i].column_location);
+            return 0;
+        }
+
+        if (!validate_literal_type(schema->columns[column_index].type,
+                                   &where_clause->items[i].value)) {
+            set_runtime_error(error,
+                              "WHERE 절 리터럴 타입이 스키마와 맞지 않습니다.",
+                              where_clause->items[i].value.location);
             return 0;
         }
     }
@@ -363,11 +452,11 @@ static int execute_insert(const AppConfig *config,
     return 1;
 }
 
-static void print_selected_header(const TableSchema *schema,
-                                  const SelectStatement *statement,
-                                  int selected_indices[SQLPROC_MAX_COLUMNS],
-                                  int *selected_count,
-                                  ErrorInfo *error)
+static int resolve_selected_columns(const TableSchema *schema,
+                                    const SelectStatement *statement,
+                                    int selected_indices[SQLPROC_MAX_COLUMNS],
+                                    int *selected_count,
+                                    ErrorInfo *error)
 {
     int i;
 
@@ -388,7 +477,7 @@ static void print_selected_header(const TableSchema *schema,
                                   "SELECT 대상 컬럼이 스키마에 없습니다.",
                                   statement->column_locations[i]);
                 *selected_count = 0;
-                return;
+                return 0;
             }
 
             selected_indices[*selected_count] = column_index;
@@ -396,7 +485,16 @@ static void print_selected_header(const TableSchema *schema,
         }
     }
 
-    for (i = 0; i < *selected_count; i++) {
+    return 1;
+}
+
+static void print_selected_header(const TableSchema *schema,
+                                  int selected_indices[SQLPROC_MAX_COLUMNS],
+                                  int selected_count)
+{
+    int i;
+
+    for (i = 0; i < selected_count; i++) {
         if (i > 0) {
             fputc('\t', stdout);
         }
@@ -423,8 +521,15 @@ static int execute_select(const AppConfig *config,
         return 0;
     }
 
-    print_selected_header(&schema, statement, selected_indices, &selected_count, error);
-    if (error->message[0] != '\0') {
+    if (!resolve_selected_columns(&schema,
+                                  statement,
+                                  selected_indices,
+                                  &selected_count,
+                                  error)) {
+        return 0;
+    }
+
+    if (!validate_where_clause(&schema, &statement->where_clause, error)) {
         return 0;
     }
 
@@ -443,6 +548,34 @@ static int execute_select(const AppConfig *config,
         fclose(file);
         return 1;
     }
+
+    {
+        char header_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN];
+        int header_count;
+        int i;
+
+        if (!parse_csv_line(line, header_values, &header_count)) {
+            fclose(file);
+            set_file_error(error, "CSV 헤더 형식이 잘못되었습니다.");
+            return 0;
+        }
+
+        if (header_count != schema.column_count) {
+            fclose(file);
+            set_file_error(error, "CSV 헤더가 스키마와 다릅니다.");
+            return 0;
+        }
+
+        for (i = 0; i < schema.column_count; i++) {
+            if (strcmp(header_values[i], schema.columns[i].name) != 0) {
+                fclose(file);
+                set_file_error(error, "CSV 헤더 순서가 스키마와 다릅니다.");
+                return 0;
+            }
+        }
+    }
+
+    print_selected_header(&schema, selected_indices, selected_count);
 
     while (fgets(line, sizeof(line), file) != NULL) {
         int value_count;
