@@ -396,6 +396,7 @@ static int execute_insert(const AppConfig *config,
     char path[EXECUTOR_MAX_PATH_LEN];
     int used_columns[SQLPROC_MAX_COLUMNS];
     FILE *file;
+    long row_offset;
     int i;
 
     if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
@@ -441,15 +442,18 @@ static int execute_insert(const AppConfig *config,
     }
 
     build_table_path(path, sizeof(path), config->data_dir, schema.table_name, ".csv");
-    file = fopen(path, "ab");
+    file = fopen(path, "ab+");
     if (file == NULL) {
         set_file_error(error, "데이터 파일을 열 수 없습니다.");
         return 0;
     }
 
+    fseek(file, 0, SEEK_END);
+    row_offset = ftell(file);
     write_csv_row(file, row_values, schema.column_count);
     fclose(file);
-    return 1;
+
+    return update_all_indexes_for_row(config, &schema, row_values, row_offset, error);
 }
 
 static int resolve_selected_columns(const TableSchema *schema,
@@ -505,6 +509,32 @@ static void print_selected_header(const TableSchema *schema,
     fputc('\n', stdout);
 }
 
+static int read_row_at_offset(FILE *file,
+                              long row_offset,
+                              char values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
+                              int *value_count,
+                              ErrorInfo *error)
+{
+    char line[EXECUTOR_MAX_ROW_LEN];
+
+    if (fseek(file, row_offset, SEEK_SET) != 0) {
+        set_file_error(error, "CSV 행 위치로 이동할 수 없습니다.");
+        return 0;
+    }
+
+    if (fgets(line, sizeof(line), file) == NULL) {
+        set_file_error(error, "CSV 행을 읽을 수 없습니다.");
+        return 0;
+    }
+
+    if (!parse_csv_line(line, values, value_count)) {
+        set_file_error(error, "CSV 행 형식이 잘못되었습니다.");
+        return 0;
+    }
+
+    return 1;
+}
+
 static int execute_select(const AppConfig *config,
                           const SelectStatement *statement,
                           ErrorInfo *error)
@@ -515,6 +545,9 @@ static int execute_select(const AppConfig *config,
     char values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN];
     int selected_indices[SQLPROC_MAX_COLUMNS];
     int selected_count;
+    long candidate_offsets[SQLPROC_MAX_INDEX_RESULTS];
+    int candidate_count;
+    int used_index;
     FILE *file;
 
     if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
@@ -533,10 +566,21 @@ static int execute_select(const AppConfig *config,
         return 0;
     }
 
+    if (!try_collect_offsets_from_indexes(config,
+                                          &schema,
+                                          statement,
+                                          candidate_offsets,
+                                          &candidate_count,
+                                          &used_index,
+                                          error)) {
+        return 0;
+    }
+
     build_table_path(path, sizeof(path), config->data_dir, schema.table_name, ".csv");
     file = fopen(path, "rb");
     if (file == NULL) {
         if (errno == ENOENT) {
+            print_selected_header(&schema, selected_indices, selected_count);
             return 1;
         }
 
@@ -576,6 +620,56 @@ static int execute_select(const AppConfig *config,
     }
 
     print_selected_header(&schema, selected_indices, selected_count);
+
+    if (used_index) {
+        int offset_index;
+
+        for (offset_index = 0; offset_index < candidate_count; offset_index++) {
+            int value_count;
+            int match_result;
+            int i;
+
+            memset(values, 0, sizeof(values));
+
+            if (!read_row_at_offset(file,
+                                    candidate_offsets[offset_index],
+                                    values,
+                                    &value_count,
+                                    error)) {
+                fclose(file);
+                return 0;
+            }
+
+            if (value_count != schema.column_count) {
+                fclose(file);
+                set_file_error(error, "CSV 컬럼 수가 스키마와 맞지 않습니다.");
+                return 0;
+            }
+
+            match_result = row_matches_where(&schema, values, &statement->where_clause, error);
+            if (match_result < 0) {
+                fclose(file);
+                return 0;
+            }
+
+            if (!match_result) {
+                continue;
+            }
+
+            for (i = 0; i < selected_count; i++) {
+                if (i > 0) {
+                    fputc('\t', stdout);
+                }
+
+                fputs(values[selected_indices[i]], stdout);
+            }
+
+            fputc('\n', stdout);
+        }
+
+        fclose(file);
+        return 1;
+    }
 
     while (fgets(line, sizeof(line), file) != NULL) {
         int value_count;
@@ -621,12 +715,11 @@ static int execute_select(const AppConfig *config,
     return 1;
 }
 
-static int execute_create_index(const CreateIndexStatement *statement, ErrorInfo *error)
+static int execute_create_index(const AppConfig *config,
+                                const CreateIndexStatement *statement,
+                                ErrorInfo *error)
 {
-    set_runtime_error(error,
-                      "CREATE INDEX 실행은 B+ 트리 브랜치에서 추가됩니다.",
-                      statement->index_location);
-    return 0;
+    return create_index_from_statement(config, statement, error);
 }
 
 int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error)
@@ -650,7 +743,7 @@ int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInf
             continue;
         }
 
-        if (!execute_create_index(&program->items[i].create_index_statement, error)) {
+        if (!execute_create_index(config, &program->items[i].create_index_statement, error)) {
             return 0;
         }
     }

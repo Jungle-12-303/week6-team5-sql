@@ -11,6 +11,8 @@
 #define SQLPROC_MAX_STATEMENTS 32
 #define SQLPROC_MAX_ERROR_LEN 256
 #define SQLPROC_MAX_SQL_SIZE 8192
+#define SQLPROC_BTREE_MAX_KEYS 4
+#define SQLPROC_MAX_INDEX_RESULTS 2048
 
 typedef enum {
     DATA_TYPE_INT,
@@ -175,6 +177,21 @@ int load_table_schema(const char *schema_dir,
                       TableSchema *schema,
                       ErrorInfo *error);
 int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error);
+int create_index_from_statement(const AppConfig *config,
+                                const CreateIndexStatement *statement,
+                                ErrorInfo *error);
+int update_all_indexes_for_row(const AppConfig *config,
+                               const TableSchema *schema,
+                               char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
+                               long row_offset,
+                               ErrorInfo *error);
+int try_collect_offsets_from_indexes(const AppConfig *config,
+                                     const TableSchema *schema,
+                                     const SelectStatement *statement,
+                                     long offsets[SQLPROC_MAX_INDEX_RESULTS],
+                                     int *offset_count,
+                                     int *used_index,
+                                     ErrorInfo *error);
 
 const char *statement_type_name(StatementType type);
 const char *compare_operator_name(CompareOperator operator_type);
