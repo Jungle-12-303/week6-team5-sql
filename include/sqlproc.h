@@ -184,7 +184,11 @@ int update_all_indexes_for_row(const AppConfig *config,
                                const TableSchema *schema,
                                char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
                                long row_offset,
+                               int *changed_index,
                                ErrorInfo *error);
+int rebuild_indexes_for_table(const AppConfig *config,
+                              const TableSchema *schema,
+                              ErrorInfo *error);
 int try_collect_offsets_from_indexes(const AppConfig *config,
                                      const TableSchema *schema,
                                      const SelectStatement *statement,

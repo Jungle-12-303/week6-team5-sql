@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "sqlproc.h"
 
@@ -78,22 +79,26 @@ static int write_csv_field(FILE *file, const char *text)
     }
 
     if (!needs_quote) {
-        fputs(text, file);
-        return 1;
+        return fputs(text, file) != EOF;
     }
 
-    fputc('"', file);
+    if (fputc('"', file) == EOF) {
+        return 0;
+    }
 
     for (cursor = text; *cursor != '\0'; cursor++) {
         if (*cursor == '"') {
-            fputc('"', file);
+            if (fputc('"', file) == EOF) {
+                return 0;
+            }
         }
 
-        fputc(*cursor, file);
+        if (fputc(*cursor, file) == EOF) {
+            return 0;
+        }
     }
 
-    fputc('"', file);
-    return 1;
+    return fputc('"', file) != EOF;
 }
 
 static int write_csv_row(FILE *file,
@@ -104,14 +109,17 @@ static int write_csv_row(FILE *file,
 
     for (i = 0; i < value_count; i++) {
         if (i > 0) {
-            fputc(',', file);
+            if (fputc(',', file) == EOF) {
+                return 0;
+            }
         }
 
-        write_csv_field(file, values[i]);
+        if (!write_csv_field(file, values[i])) {
+            return 0;
+        }
     }
 
-    fputc('\n', file);
-    return 1;
+    return fputc('\n', file) != EOF;
 }
 
 static int ensure_data_file(const AppConfig *config,
@@ -166,13 +174,26 @@ static int ensure_data_file(const AppConfig *config,
 
     for (i = 0; i < schema->column_count; i++) {
         if (i > 0) {
-            fputc(',', file);
+            if (fputc(',', file) == EOF) {
+                fclose(file);
+                set_file_error(error, "데이터 파일 헤더를 쓸 수 없습니다.");
+                return 0;
+            }
         }
 
-        fputs(schema->columns[i].name, file);
+        if (fputs(schema->columns[i].name, file) == EOF) {
+            fclose(file);
+            set_file_error(error, "데이터 파일 헤더를 쓸 수 없습니다.");
+            return 0;
+        }
     }
 
-    fputc('\n', file);
+    if (fputc('\n', file) == EOF) {
+        fclose(file);
+        set_file_error(error, "데이터 파일 헤더를 쓸 수 없습니다.");
+        return 0;
+    }
+
     fclose(file);
     return 1;
 }
@@ -398,6 +419,9 @@ static int execute_insert(const AppConfig *config,
     FILE *file;
     long row_offset;
     int i;
+    int changed_index;
+    ErrorInfo update_error;
+    ErrorInfo rebuild_error;
 
     if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
         return 0;
@@ -442,7 +466,7 @@ static int execute_insert(const AppConfig *config,
     }
 
     build_table_path(path, sizeof(path), config->data_dir, schema.table_name, ".csv");
-    file = fopen(path, "ab+");
+    file = fopen(path, "rb+");
     if (file == NULL) {
         set_file_error(error, "데이터 파일을 열 수 없습니다.");
         return 0;
@@ -450,10 +474,37 @@ static int execute_insert(const AppConfig *config,
 
     fseek(file, 0, SEEK_END);
     row_offset = ftell(file);
-    write_csv_row(file, row_values, schema.column_count);
-    fclose(file);
+    if (!write_csv_row(file, row_values, schema.column_count)) {
+        fclose(file);
+        set_file_error(error, "데이터 행을 파일에 쓸 수 없습니다.");
+        return 0;
+    }
 
-    return update_all_indexes_for_row(config, &schema, row_values, row_offset, error);
+    if (!update_all_indexes_for_row(config,
+                                    &schema,
+                                    row_values,
+                                    row_offset,
+                                    &changed_index,
+                                    error)) {
+        update_error = *error;
+        fflush(file);
+        ftruncate(fileno(file), row_offset);
+        fclose(file);
+
+        if (changed_index) {
+            memset(&rebuild_error, 0, sizeof(rebuild_error));
+            if (!rebuild_indexes_for_table(config, &schema, &rebuild_error)) {
+                *error = rebuild_error;
+                return 0;
+            }
+        }
+
+        *error = update_error;
+        return 0;
+    }
+
+    fclose(file);
+    return 1;
 }
 
 static int resolve_selected_columns(const TableSchema *schema,

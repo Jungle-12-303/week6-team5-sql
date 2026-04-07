@@ -10,6 +10,7 @@
 #define INDEX_VERSION 1
 #define INDEX_MAX_PATH_LEN 512
 #define INDEX_MAX_PATH_DEPTH 32
+#define INDEX_MAX_TABLE_INDEXES 32
 #define INDEX_ROW_BUFFER_SIZE 1024
 
 typedef struct {
@@ -24,6 +25,14 @@ typedef struct {
     int next_node_id;
 } IndexHeader;
 
+/*
+ * leaf와 internal 노드를 같은 크기의 구조체로 저장합니다.
+ * - leaf: keys + row_offsets + next_leaf_id 사용
+ * - internal: keys + child_ids 사용
+ *
+ * 이렇게 하면 node id에서 파일 위치를 계산할 때
+ * `sizeof(BTreeNode)`만큼 곱해 바로 이동할 수 있습니다.
+ */
 typedef struct {
     int is_leaf;
     int key_count;
@@ -32,6 +41,12 @@ typedef struct {
     long row_offsets[SQLPROC_BTREE_MAX_KEYS];
     int child_ids[SQLPROC_BTREE_MAX_KEYS + 1];
 } BTreeNode;
+
+static int collect_table_index_paths(const AppConfig *config,
+                                     const TableSchema *schema,
+                                     char paths[INDEX_MAX_TABLE_INDEXES][INDEX_MAX_PATH_LEN],
+                                     int *path_count,
+                                     ErrorInfo *error);
 
 static void set_file_error(ErrorInfo *error, const char *message)
 {
@@ -456,8 +471,9 @@ static void split_leaf_node(const IndexHeader *header,
  * - 출력: 수정된 왼쪽 내부 노드, 새 오른쪽 내부 노드, 상위 부모로 올릴 키
  *
  * 핵심 흐름:
- * - 임시 키/자식 배열에 새 항목을 삽입한 뒤 가운데 키를 떼어 올리고,
- *   나머지를 좌우 노드에 나눠 다시 씁니다.
+ * - 먼저 부모 안에서 `left_child_id`가 있던 자리를 찾아 삽입 위치를 정합니다.
+ * - 그 위치 기준으로 새 분리 키와 오른쪽 자식을 임시 배열에 끼워 넣습니다.
+ * - 가운데 키 하나는 상위 부모로 올리고, 나머지를 좌우 노드에 나눠 다시 씁니다.
  */
 static void split_internal_node(const IndexHeader *header,
                                 BTreeNode *left_node,
@@ -524,7 +540,8 @@ static void split_internal_node(const IndexHeader *header,
         snprintf(right_node->keys[i], sizeof(right_node->keys[i]), "%s", temp_keys[middle_index + 1 + i]);
         right_node->child_ids[i] = temp_children[middle_index + 1 + i];
     }
-    right_node->child_ids[right_node->key_count] = temp_children[total_keys + 1];
+    right_node->child_ids[right_node->key_count] =
+        temp_children[middle_index + 1 + right_node->key_count];
 }
 
 /*
@@ -540,8 +557,14 @@ static void split_internal_node(const IndexHeader *header,
  * - 출력: 필요하면 새 루트를 만들거나 상위 부모까지 분할을 전파합니다.
  *
  * 핵심 흐름:
- * - 부모가 비어 있으면 새 루트를 만들고,
- *   부모가 꽉 차면 내부 노드 분할을 반복해 위로 전파합니다.
+ * - 부모가 없으면 새 루트를 만들어 왼쪽/오른쪽 자식을 바로 연결합니다.
+ * - 부모에 자리가 있으면 그 자리에서 끝납니다.
+ * - 부모도 꽉 차 있으면 방금 쪼갠 부모를 새로운 `left_child_id`로 보고,
+ *   새로 생긴 오른쪽 내부 노드와 함께 한 단계 위 부모로 계속 올라갑니다.
+ *
+ * 재귀 대신 반복문을 쓰는 이유:
+ * - 초심자가 호출 스택보다 "현재 부모를 고치고, 필요하면 한 단계 위로 간다"
+ *   는 흐름으로 따라가기 쉽도록 하기 위해서입니다.
  */
 static int insert_into_parent(FILE *file,
                               IndexHeader *header,
@@ -644,7 +667,28 @@ static int insert_into_parent(FILE *file,
         }
     }
 
-    return 1;
+    {
+        BTreeNode new_root;
+        int new_root_id;
+
+        if (!allocate_node(file, header, &new_root_id, error)) {
+            return 0;
+        }
+
+        memset(&new_root, 0, sizeof(new_root));
+        new_root.is_leaf = 0;
+        new_root.key_count = 1;
+        snprintf(new_root.keys[0], sizeof(new_root.keys[0]), "%s", current_key);
+        new_root.child_ids[0] = left_child_id;
+        new_root.child_ids[1] = right_child_id;
+        header->root_node_id = new_root_id;
+
+        if (!write_header(file, header, error)) {
+            return 0;
+        }
+
+        return write_node(file, new_root_id, &new_root, error);
+    }
 }
 
 static int insert_entry(FILE *file,
@@ -845,13 +889,14 @@ int create_index_from_statement(const AppConfig *config,
     FILE *existing_file;
     int column_index;
     IndexHeader header;
+    int i;
 
     if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
         return 0;
     }
 
     column_index = -1;
-    for (int i = 0; i < schema.column_count; i++) {
+    for (i = 0; i < schema.column_count; i++) {
         if (strcmp(schema.columns[i].name, statement->column_name) == 0) {
             column_index = i;
             break;
@@ -891,7 +936,12 @@ int create_index_from_statement(const AppConfig *config,
     header.column_index = column_index;
     header.column_type = schema.columns[column_index].type;
 
-    return append_existing_rows(config, &schema, &header, path, error);
+    if (!append_existing_rows(config, &schema, &header, path, error)) {
+        remove(path);
+        return 0;
+    }
+
+    return 1;
 }
 
 static int open_matching_index(const char *path,
@@ -920,15 +970,203 @@ static int open_matching_index(const char *path,
     return 1;
 }
 
+static int header_matches_current_schema(const IndexHeader *header,
+                                         const TableSchema *schema)
+{
+    if (header->column_index < 0 || header->column_index >= schema->column_count) {
+        return 0;
+    }
+
+    if (strcmp(schema->columns[header->column_index].name, header->column_name) != 0) {
+        return 0;
+    }
+
+    return (int)schema->columns[header->column_index].type == header->column_type;
+}
+
 int update_all_indexes_for_row(const AppConfig *config,
                                const TableSchema *schema,
                                char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
                                long row_offset,
+                               int *changed_index,
                                ErrorInfo *error)
+{
+    char paths[INDEX_MAX_TABLE_INDEXES][INDEX_MAX_PATH_LEN];
+    int path_count;
+    int path_index;
+
+    *changed_index = 0;
+    if (!collect_table_index_paths(config, schema, paths, &path_count, error)) {
+        return 0;
+    }
+
+    for (path_index = 0; path_index < path_count; path_index++) {
+        FILE *file;
+        IndexHeader header;
+
+        file = fopen(paths[path_index], "rb+");
+        if (file == NULL) {
+            set_file_error(error, "인덱스 파일을 열 수 없습니다.");
+            return 0;
+        }
+
+        if (!read_header(file, &header, error)) {
+            fclose(file);
+            return 0;
+        }
+
+        if (!header_matches_current_schema(&header, schema)) {
+            fclose(file);
+            set_file_error(error, "인덱스와 현재 스키마가 맞지 않습니다.");
+            return 0;
+        }
+
+        if (header.column_type == DATA_TYPE_INT &&
+            row_values[header.column_index][0] == '\0') {
+            fclose(file);
+            continue;
+        }
+
+        if (!insert_entry(file, &header, row_values[header.column_index], row_offset, error)) {
+            fclose(file);
+            return 0;
+        }
+
+        *changed_index = 1;
+        fclose(file);
+    }
+
+    return 1;
+}
+
+static int key_matches_predicate(int data_type,
+                                 const char *index_key,
+                                 const Predicate *predicate)
+{
+    int compare_result;
+
+    compare_result = compare_keys(data_type, index_key, predicate->value.text);
+
+    if (predicate->operator_type == COMPARE_EQUAL) {
+        return compare_result == 0;
+    }
+
+    if (predicate->operator_type == COMPARE_LESS) {
+        return compare_result < 0;
+    }
+
+    if (predicate->operator_type == COMPARE_LESS_EQUAL) {
+        return compare_result <= 0;
+    }
+
+    if (predicate->operator_type == COMPARE_GREATER) {
+        return compare_result > 0;
+    }
+
+    return compare_result >= 0;
+}
+
+static int append_offset(long offsets[SQLPROC_MAX_INDEX_RESULTS],
+                         int *offset_count,
+                         long row_offset,
+                         ErrorInfo *error)
+{
+    if (*offset_count >= SQLPROC_MAX_INDEX_RESULTS) {
+        set_file_error(error, "인덱스 결과 수가 최대 개수를 넘었습니다.");
+        return 0;
+    }
+
+    offsets[*offset_count] = row_offset;
+    *offset_count += 1;
+    return 1;
+}
+
+static void sort_offsets(long offsets[SQLPROC_MAX_INDEX_RESULTS], int offset_count)
+{
+    int i;
+    int j;
+
+    for (i = 0; i < offset_count; i++) {
+        for (j = i + 1; j < offset_count; j++) {
+            if (offsets[i] > offsets[j]) {
+                long temp;
+
+                temp = offsets[i];
+                offsets[i] = offsets[j];
+                offsets[j] = temp;
+            }
+        }
+    }
+}
+
+/*
+ * 무엇을 하는가:
+ * - 선택된 인덱스 파일을 따라가며 WHERE 조건에 맞는 row offset 후보를
+ *   수집합니다.
+ *
+ * 왜 필요한가:
+ * - 실행기가 CSV 전체를 돌지 않고도 후보 행만 빠르게 읽을 수 있게 해,
+ *   인덱스 기반 조회 경로를 만들기 위해서입니다.
+ *
+ * 입력과 출력:
+ * - 입력: 열려 있는 인덱스 파일, 인덱스 헤더, 사용할 predicate
+ * - 출력: 조건에 맞는 row offset 배열과 개수
+ *
+ * 핵심 흐름:
+ * - 현재 구현은 모든 leaf 노드를 한 번씩 읽어 후보를 모읍니다.
+ * - leaf 안의 키를 predicate와 비교해 맞는 row offset만 담고,
+ *   마지막에는 row offset 순서로 다시 정렬해 조회 결과를 안정적으로 맞춥니다.
+ */
+static int collect_offsets_from_index(FILE *file,
+                                      const IndexHeader *header,
+                                      const Predicate *predicate,
+                                      long offsets[SQLPROC_MAX_INDEX_RESULTS],
+                                      int *offset_count,
+                                      ErrorInfo *error)
+{
+    int node_id;
+
+    *offset_count = 0;
+
+    for (node_id = 0; node_id < header->next_node_id; node_id++) {
+        BTreeNode leaf;
+        int i;
+
+        if (!read_node(file, node_id, &leaf, error)) {
+            return 0;
+        }
+
+        if (!leaf.is_leaf) {
+            continue;
+        }
+
+        for (i = 0; i < leaf.key_count; i++) {
+            if (!key_matches_predicate(header->column_type,
+                                       leaf.keys[i],
+                                       predicate)) {
+                continue;
+            }
+
+            if (!append_offset(offsets, offset_count, leaf.row_offsets[i], error)) {
+                return 0;
+            }
+        }
+    }
+
+    sort_offsets(offsets, *offset_count);
+    return 1;
+}
+
+static int collect_table_index_paths(const AppConfig *config,
+                                     const TableSchema *schema,
+                                     char paths[INDEX_MAX_TABLE_INDEXES][INDEX_MAX_PATH_LEN],
+                                     int *path_count,
+                                     ErrorInfo *error)
 {
     DIR *directory;
     struct dirent *entry;
 
+    *path_count = 0;
     directory = opendir(config->index_dir);
     if (directory == NULL) {
         if (errno == ENOENT) {
@@ -949,7 +1187,7 @@ int update_all_indexes_for_row(const AppConfig *config,
         }
 
         snprintf(path, sizeof(path), "%s/%s", config->index_dir, entry->d_name);
-        file = fopen(path, "rb+");
+        file = fopen(path, "rb");
         if (file == NULL) {
             continue;
         }
@@ -960,186 +1198,128 @@ int update_all_indexes_for_row(const AppConfig *config,
             return 0;
         }
 
+        fclose(file);
+
         if (strcmp(header.table_name, schema->table_name) != 0) {
-            fclose(file);
             continue;
         }
 
-        if (header.column_index < 0 || header.column_index >= schema->column_count) {
-            fclose(file);
-            continue;
-        }
-
-        if (header.column_type == DATA_TYPE_INT &&
-            row_values[header.column_index][0] == '\0') {
-            fclose(file);
-            continue;
-        }
-
-        if (!insert_entry(file, &header, row_values[header.column_index], row_offset, error)) {
-            fclose(file);
+        if (!header_matches_current_schema(&header, schema)) {
+            set_file_error(error, "인덱스와 현재 스키마가 맞지 않습니다.");
             closedir(directory);
             return 0;
         }
 
-        fclose(file);
+        if (*path_count >= INDEX_MAX_TABLE_INDEXES) {
+            set_file_error(error, "한 테이블에 연결된 인덱스 수가 너무 많습니다.");
+            closedir(directory);
+            return 0;
+        }
+
+        snprintf(paths[*path_count], INDEX_MAX_PATH_LEN, "%s", path);
+        *path_count += 1;
     }
 
     closedir(directory);
     return 1;
 }
 
-static int find_leftmost_leaf(FILE *file,
-                              const IndexHeader *header,
-                              int *leaf_id,
-                              ErrorInfo *error)
+static int rebuild_single_index_file(const AppConfig *config,
+                                     const TableSchema *schema,
+                                     const char *path,
+                                     ErrorInfo *error)
 {
-    int node_id;
+    FILE *file;
+    IndexHeader header;
+    IndexHeader rebuild_header;
+    char temp_path[INDEX_MAX_PATH_LEN];
 
-    node_id = header->root_node_id;
-    while (1) {
-        BTreeNode node;
-
-        if (!read_node(file, node_id, &node, error)) {
-            return 0;
-        }
-
-        if (node.is_leaf) {
-            *leaf_id = node_id;
-            return 1;
-        }
-
-        node_id = node.child_ids[0];
-    }
-}
-
-static int append_offset(long offsets[SQLPROC_MAX_INDEX_RESULTS],
-                         int *offset_count,
-                         long row_offset,
-                         ErrorInfo *error)
-{
-    if (*offset_count >= SQLPROC_MAX_INDEX_RESULTS) {
-        set_file_error(error, "인덱스 결과 수가 최대 개수를 넘었습니다.");
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        set_file_error(error, "복구할 인덱스 파일을 열 수 없습니다.");
         return 0;
     }
 
-    offsets[*offset_count] = row_offset;
-    *offset_count += 1;
+    if (!read_header(file, &header, error)) {
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);
+
+    if (!header_matches_current_schema(&header, schema)) {
+        set_file_error(error, "인덱스와 현재 스키마가 맞지 않습니다.");
+        return 0;
+    }
+
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+    remove(temp_path);
+
+    if (!initialize_index_file(temp_path,
+                               header.index_name,
+                               header.table_name,
+                               header.column_name,
+                               header.column_index,
+                               header.column_type,
+                               error)) {
+        remove(temp_path);
+        return 0;
+    }
+
+    memset(&rebuild_header, 0, sizeof(rebuild_header));
+    snprintf(rebuild_header.table_name,
+             sizeof(rebuild_header.table_name),
+             "%s",
+             header.table_name);
+    snprintf(rebuild_header.column_name,
+             sizeof(rebuild_header.column_name),
+             "%s",
+             header.column_name);
+    rebuild_header.column_index = header.column_index;
+    rebuild_header.column_type = header.column_type;
+
+    if (!append_existing_rows(config, schema, &rebuild_header, temp_path, error)) {
+        remove(temp_path);
+        return 0;
+    }
+
+    if (rename(temp_path, path) != 0) {
+        remove(temp_path);
+        set_file_error(error, "복구한 인덱스 파일을 교체할 수 없습니다.");
+        return 0;
+    }
+
+    return 1;
+}
+
+int rebuild_indexes_for_table(const AppConfig *config,
+                              const TableSchema *schema,
+                              ErrorInfo *error)
+{
+    char paths[INDEX_MAX_TABLE_INDEXES][INDEX_MAX_PATH_LEN];
+    int path_count;
+    int i;
+
+    if (!collect_table_index_paths(config, schema, paths, &path_count, error)) {
+        return 0;
+    }
+
+    for (i = 0; i < path_count; i++) {
+        if (!rebuild_single_index_file(config, schema, paths[i], error)) {
+            return 0;
+        }
+    }
+
     return 1;
 }
 
 /*
- * 무엇을 하는가:
- * - 선택된 인덱스 파일을 따라가며 WHERE 조건에 맞는 row offset 후보를
- *   수집합니다.
- *
- * 왜 필요한가:
- * - 실행기가 CSV 전체를 돌지 않고도 후보 행만 빠르게 읽을 수 있게 해,
- *   인덱스 기반 조회 경로를 만들기 위해서입니다.
- *
- * 입력과 출력:
- * - 입력: 열려 있는 인덱스 파일, 인덱스 헤더, 사용할 predicate
- * - 출력: 조건에 맞는 row offset 배열과 개수
- *
- * 핵심 흐름:
- * - `=`와 `>=`/`>`는 해당 leaf부터 오른쪽으로 훑고,
- *   `<`와 `<=`는 가장 왼쪽 leaf부터 시작해 범위를 벗어나면 멈춥니다.
+ * 인덱스 선택 규칙:
+ * - WHERE 조건 중 인덱스가 있는 조건이 하나라도 있으면 그 후보를 사용합니다.
+ * - 동등 비교(`=`) 인덱스가 보이면 범위 비교보다 우선합니다.
+ * - 선택된 인덱스 하나로 row offset 후보를 모은 뒤,
+ *   나머지 조건은 executor에서 다시 검사합니다.
  */
-static int collect_offsets_from_index(FILE *file,
-                                      const IndexHeader *header,
-                                      const Predicate *predicate,
-                                      long offsets[SQLPROC_MAX_INDEX_RESULTS],
-                                      int *offset_count,
-                                      ErrorInfo *error)
-{
-    int leaf_id;
-    int path[INDEX_MAX_PATH_DEPTH];
-    int path_length;
-
-    *offset_count = 0;
-
-    if (predicate->operator_type == COMPARE_LESS ||
-        predicate->operator_type == COMPARE_LESS_EQUAL) {
-        if (!find_leftmost_leaf(file, header, &leaf_id, error)) {
-            return 0;
-        }
-    } else {
-        if (!find_leaf_node(file,
-                            header,
-                            predicate->value.text,
-                            path,
-                            &path_length,
-                            &leaf_id,
-                            error)) {
-            return 0;
-        }
-    }
-
-    while (leaf_id != -1) {
-        BTreeNode leaf;
-        int i;
-
-        if (!read_node(file, leaf_id, &leaf, error)) {
-            return 0;
-        }
-
-        for (i = 0; i < leaf.key_count; i++) {
-            int compare_result;
-
-            compare_result = compare_keys(header->column_type,
-                                          leaf.keys[i],
-                                          predicate->value.text);
-
-            if (predicate->operator_type == COMPARE_EQUAL && compare_result != 0) {
-                if (*offset_count > 0 && compare_result > 0) {
-                    return 1;
-                }
-                continue;
-            }
-
-            if (predicate->operator_type == COMPARE_LESS && compare_result >= 0) {
-                return 1;
-            }
-
-            if (predicate->operator_type == COMPARE_LESS_EQUAL && compare_result > 0) {
-                return 1;
-            }
-
-            if (predicate->operator_type == COMPARE_GREATER && compare_result <= 0) {
-                continue;
-            }
-
-            if (predicate->operator_type == COMPARE_GREATER_EQUAL && compare_result < 0) {
-                continue;
-            }
-
-            if (!append_offset(offsets, offset_count, leaf.row_offsets[i], error)) {
-                return 0;
-            }
-        }
-
-        if (predicate->operator_type == COMPARE_EQUAL && *offset_count > 0) {
-            int last_compare;
-
-            last_compare = compare_keys(header->column_type,
-                                        leaf.keys[leaf.key_count - 1],
-                                        predicate->value.text);
-            if (last_compare > 0) {
-                return 1;
-            }
-        }
-
-        if (predicate->operator_type == COMPARE_LESS ||
-            predicate->operator_type == COMPARE_LESS_EQUAL) {
-            leaf_id = leaf.next_leaf_id;
-        } else {
-            leaf_id = leaf.next_leaf_id;
-        }
-    }
-
-    return 1;
-}
-
 int try_collect_offsets_from_indexes(const AppConfig *config,
                                      const TableSchema *schema,
                                      const SelectStatement *statement,
@@ -1231,12 +1411,26 @@ int try_collect_offsets_from_indexes(const AppConfig *config,
             return 0;
         }
 
+        if (!header_matches_current_schema(&header, schema)) {
+            fclose(file);
+            set_file_error(error, "인덱스와 현재 스키마가 맞지 않습니다.");
+            return 0;
+        }
+
         if (!collect_offsets_from_index(file,
                                         &header,
                                         &statement->where_clause.items[chosen_predicate],
                                         offsets,
                                         offset_count,
                                         error)) {
+            if (strcmp(error->message, "인덱스 결과 수가 최대 개수를 넘었습니다.") == 0) {
+                memset(error, 0, sizeof(*error));
+                *offset_count = 0;
+                *used_index = 0;
+                fclose(file);
+                return 1;
+            }
+
             fclose(file);
             return 0;
         }
