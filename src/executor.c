@@ -491,6 +491,11 @@ static int execute_insert(const AppConfig *config,
         ftruncate(fileno(file), row_offset);
         fclose(file);
 
+        /*
+         * 1. CSV에 막 추가한 행을 먼저 되돌립니다.
+         * 2. 그다음 이미 손댄 인덱스가 있을 수 있으면 같은 테이블 인덱스를
+         *    현재 CSV 내용 기준으로 다시 만들어 정합성을 맞춥니다.
+         */
         if (changed_index) {
             memset(&rebuild_error, 0, sizeof(rebuild_error));
             if (!rebuild_indexes_for_table(config, &schema, &rebuild_error)) {

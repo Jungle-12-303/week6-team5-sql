@@ -21,6 +21,7 @@ static int create_temp_workspace(char *base_path,
                                  char *index_dir,
                                  size_t index_size,
                                  const char *prefix);
+static int append_text(char *dest, size_t dest_size, const char *text);
 
 static int test_parse_arguments_success(void)
 {
@@ -53,6 +54,22 @@ static int test_parse_arguments_success(void)
         return 0;
     }
 
+    return 1;
+}
+
+static int append_text(char *dest, size_t dest_size, const char *text)
+{
+    size_t current_length;
+    size_t text_length;
+
+    current_length = strlen(dest);
+    text_length = strlen(text);
+
+    if (current_length + text_length >= dest_size) {
+        return 0;
+    }
+
+    memcpy(dest + current_length, text, text_length + 1);
     return 1;
 }
 
@@ -675,7 +692,12 @@ static int test_btree_duplicate_split_query(void)
     for (i = 1; i <= 20; i++) {
         int age;
 
-        age = i <= 10 ? 30 : (100 + i);
+        if (i <= 10) {
+            age = 30;
+        } else {
+            age = 100 + i;
+        }
+
         fprintf(file, "INSERT INTO users (id, age) VALUES (%d, %d);", i, age);
     }
     fputc('\n', file);
@@ -745,7 +767,9 @@ static int test_btree_duplicate_split_query(void)
         char line[64];
 
         snprintf(line, sizeof(line), "%d\t30\n", i);
-        strncat(expected_output, line, sizeof(expected_output) - strlen(expected_output) - 1);
+        if (!append_text(expected_output, sizeof(expected_output), line)) {
+            return 0;
+        }
     }
 
     return file_equals_text(output_path, expected_output);

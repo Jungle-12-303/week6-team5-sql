@@ -1027,12 +1027,17 @@ int update_all_indexes_for_row(const AppConfig *config,
             continue;
         }
 
+        /*
+         * insert_entry는 노드 할당과 여러 번의 파일 쓰기를 포함합니다.
+         * 중간에 실패해도 인덱스 파일이 부분 수정됐을 수 있으므로,
+         * 실제 삽입을 시작하기 전에 복구 필요 상태를 먼저 표시합니다.
+         */
+        *changed_index = 1;
         if (!insert_entry(file, &header, row_values[header.column_index], row_offset, error)) {
             fclose(file);
             return 0;
         }
 
-        *changed_index = 1;
         fclose(file);
     }
 
