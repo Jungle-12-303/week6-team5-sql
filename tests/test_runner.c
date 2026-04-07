@@ -7,6 +7,17 @@
 
 #include "sqlproc.h"
 
+/*
+ * test_runner.c는 프로젝트의 통합 테스트와 단위 성격 테스트를 함께 담습니다.
+ * 초심자가 흐름을 따라가기 쉽도록 한 파일에서
+ * - 인자 파싱
+ * - 토크나이저/파서
+ * - CSV 기반 실행기
+ * - 인덱스 영속성과 조회
+ * - REPL/PK 동작
+ * 을 순서대로 검증합니다.
+ */
+
 static int ensure_directory(const char *path);
 static int write_text_file(const char *path, const char *text);
 static int file_contains_text(const char *path, const char *needle);
@@ -361,6 +372,7 @@ static int test_run_program_success(void)
 
 static int ensure_directory(const char *path)
 {
+    /* 테스트용 임시 워크스페이스 디렉터리를 보장합니다. */
     if (mkdir(path, 0777) == 0) {
         return 1;
     }
@@ -372,6 +384,7 @@ static int write_text_file(const char *path, const char *text)
 {
     FILE *file;
 
+    /* 테스트 입력 SQL, 스키마, CSV 파일을 간단히 만들기 위한 헬퍼입니다. */
     file = fopen(path, "wb");
     if (file == NULL) {
         return 0;
@@ -388,6 +401,7 @@ static int file_contains_text(const char *path, const char *needle)
     FILE *file;
     size_t size;
 
+    /* 출력 파일에 특정 문자열이 포함됐는지 확인합니다. */
     file = fopen(path, "rb");
     if (file == NULL) {
         return 0;
@@ -405,6 +419,7 @@ static int file_equals_text(const char *path, const char *expected_text)
     FILE *file;
     size_t size;
 
+    /* 출력 파일 전체가 기대 문자열과 정확히 일치하는지 확인합니다. */
     file = fopen(path, "rb");
     if (file == NULL) {
         return 0;
@@ -422,6 +437,7 @@ static int capture_run_program(const AppConfig *config, const char *output_path)
     int saved_stdout;
     int result;
 
+    /* run_program의 stdout을 파일로 받아 SELECT 결과를 검증할 때 사용합니다. */
     file = fopen(output_path, "wb");
     if (file == NULL) {
         return 0;
@@ -458,6 +474,11 @@ static int capture_run_program_with_input(const AppConfig *config,
     int saved_stdout;
     int result;
 
+    /*
+     * REPL 테스트용 헬퍼입니다.
+     * - input_text를 stdin처럼 주입하고
+     * - stdout은 파일로 받아 실제 대화형 실행 결과를 검증합니다.
+     */
     input_file = tmpfile();
     if (input_file == NULL) {
         return 0;
@@ -519,6 +540,7 @@ static int create_temp_workspace(char *base_path,
                                  size_t index_size,
                                  const char *prefix)
 {
+    /* 각 테스트가 서로 간섭하지 않도록 /tmp 아래에 독립 워크스페이스를 만듭니다. */
     snprintf(base_path, base_size, "/tmp/%sXXXXXX", prefix);
     if (mkdtemp(base_path) == NULL) {
         return 0;
