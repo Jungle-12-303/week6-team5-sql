@@ -4,12 +4,8 @@ BUILD_DIR = build
 SRC_DIR = src
 TEST_DIR = tests
 
-APP_SRCS = \
-	$(SRC_DIR)/app.c \
-	$(SRC_DIR)/main.c
-
-CORE_SRCS = \
-	$(SRC_DIR)/app.c
+APP_SRCS = $(wildcard $(SRC_DIR)/*.c)
+CORE_SRCS = $(filter-out $(SRC_DIR)/main.c, $(APP_SRCS))
 
 APP_OBJS = $(APP_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 CORE_OBJS = $(CORE_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
