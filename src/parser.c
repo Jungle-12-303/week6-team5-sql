@@ -214,24 +214,30 @@ static int parse_where_clause(ParserState *state, WhereClause *where_clause, Err
 
 static int parse_value_list(ParserState *state,
                             LiteralValue values[SQLPROC_MAX_COLUMNS],
+                            int *value_count,
                             int expected_count,
                             ErrorInfo *error)
 {
-    int value_count;
+    int parsed_count;
 
-    value_count = 0;
+    parsed_count = 0;
 
     while (1) {
-        if (value_count >= expected_count) {
+        if (parsed_count >= SQLPROC_MAX_COLUMNS) {
+            set_error(error, current_token(state), "값 수가 최대 개수를 넘었습니다.");
+            return 0;
+        }
+
+        if (expected_count >= 0 && parsed_count >= expected_count) {
             set_error(error, current_token(state), "값 수가 컬럼 수보다 많습니다.");
             return 0;
         }
 
-        if (!parse_literal(state, &values[value_count], error)) {
+        if (!parse_literal(state, &values[parsed_count], error)) {
             return 0;
         }
 
-        value_count += 1;
+        parsed_count += 1;
 
         if (!token_matches(state, TOKEN_COMMA)) {
             break;
@@ -240,11 +246,12 @@ static int parse_value_list(ParserState *state,
         advance_token(state);
     }
 
-    if (value_count != expected_count) {
+    if (expected_count >= 0 && parsed_count != expected_count) {
         set_error(error, previous_token(state), "컬럼 수와 값 수가 일치하지 않습니다.");
         return 0;
     }
 
+    *value_count = parsed_count;
     return 1;
 }
 
@@ -273,36 +280,38 @@ static int parse_insert_statement(ParserState *state, Statement *statement, Erro
         return 0;
     }
 
-    if (!consume_token(state, TOKEN_LPAREN, error, "( 가 필요합니다.")) {
-        return 0;
-    }
-
     insert_statement->column_count = 0;
+    insert_statement->value_count = 0;
 
-    while (1) {
-        if (insert_statement->column_count >= SQLPROC_MAX_COLUMNS) {
-            set_error(error, current_token(state), "컬럼 수가 최대 개수를 넘었습니다.");
-            return 0;
-        }
-
-        if (!parse_identifier(state,
-                              insert_statement->column_names[insert_statement->column_count],
-                              &insert_statement->column_locations[insert_statement->column_count],
-                              error)) {
-            return 0;
-        }
-
-        insert_statement->column_count += 1;
-
-        if (!token_matches(state, TOKEN_COMMA)) {
-            break;
-        }
-
+    if (token_matches(state, TOKEN_LPAREN)) {
+        insert_statement->has_column_list = 1;
         advance_token(state);
-    }
 
-    if (!consume_token(state, TOKEN_RPAREN, error, ") 가 필요합니다.")) {
-        return 0;
+        while (1) {
+            if (insert_statement->column_count >= SQLPROC_MAX_COLUMNS) {
+                set_error(error, current_token(state), "컬럼 수가 최대 개수를 넘었습니다.");
+                return 0;
+            }
+
+            if (!parse_identifier(state,
+                                  insert_statement->column_names[insert_statement->column_count],
+                                  &insert_statement->column_locations[insert_statement->column_count],
+                                  error)) {
+                return 0;
+            }
+
+            insert_statement->column_count += 1;
+
+            if (!token_matches(state, TOKEN_COMMA)) {
+                break;
+            }
+
+            advance_token(state);
+        }
+
+        if (!consume_token(state, TOKEN_RPAREN, error, ") 가 필요합니다.")) {
+            return 0;
+        }
     }
 
     if (!consume_token(state, TOKEN_KEYWORD_VALUES, error, "VALUES 키워드가 필요합니다.")) {
@@ -315,7 +324,8 @@ static int parse_insert_statement(ParserState *state, Statement *statement, Erro
 
     if (!parse_value_list(state,
                           insert_statement->values,
-                          insert_statement->column_count,
+                          &insert_statement->value_count,
+                          insert_statement->has_column_list ? insert_statement->column_count : -1,
                           error)) {
         return 0;
     }

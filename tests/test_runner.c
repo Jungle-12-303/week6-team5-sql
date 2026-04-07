@@ -12,6 +12,9 @@ static int write_text_file(const char *path, const char *text);
 static int file_contains_text(const char *path, const char *needle);
 static int file_equals_text(const char *path, const char *expected_text);
 static int capture_run_program(const AppConfig *config, const char *output_path);
+static int capture_run_program_with_input(const AppConfig *config,
+                                          const char *input_text,
+                                          const char *output_path);
 static int create_temp_workspace(char *base_path,
                                  size_t base_size,
                                  char *schema_dir,
@@ -54,6 +57,10 @@ static int test_parse_arguments_success(void)
         return 0;
     }
 
+    if (!config.has_input_path) {
+        return 0;
+    }
+
     return 1;
 }
 
@@ -84,6 +91,27 @@ static int test_parse_arguments_fail(void)
     };
 
     return !parse_arguments(5, argv, &config);
+}
+
+static int test_parse_arguments_repl_success(void)
+{
+    AppConfig config;
+    char *argv[] = {
+        "sqlproc",
+        "--schema-dir", "schemas",
+        "--data-dir", "data",
+        "--index-dir", "indexes"
+    };
+
+    if (!parse_arguments(7, argv, &config)) {
+        return 0;
+    }
+
+    if (config.has_input_path) {
+        return 0;
+    }
+
+    return config.input_path[0] == '\0';
 }
 
 static int test_tokenize_select(void)
@@ -167,6 +195,35 @@ static int test_parse_insert_statement(void)
     }
 
     return strcmp(program.items[0].insert_statement.values[1].text, "kim") == 0;
+}
+
+static int test_parse_insert_without_column_list(void)
+{
+    TokenList tokens;
+    SqlProgram program;
+    ErrorInfo error;
+
+    if (!tokenize_sql("INSERT INTO users VALUES (1, 'park', 40);", &tokens, &error)) {
+        return 0;
+    }
+
+    if (!parse_program(&tokens, &program, &error)) {
+        return 0;
+    }
+
+    if (program.items[0].insert_statement.has_column_list) {
+        return 0;
+    }
+
+    if (program.items[0].insert_statement.column_count != 0) {
+        return 0;
+    }
+
+    if (program.items[0].insert_statement.value_count != 3) {
+        return 0;
+    }
+
+    return strcmp(program.items[0].insert_statement.values[1].text, "park") == 0;
 }
 
 static int test_parse_select_where_and_create_index(void)
@@ -271,7 +328,7 @@ static int test_run_program_success(void)
         snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
         snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
 
-        if (!write_text_file(schema_path, "id:int,name:string\n")) {
+        if (!write_text_file(schema_path, "id:int:pk,name:string\n")) {
             return 0;
         }
 
@@ -288,6 +345,7 @@ static int test_run_program_success(void)
     snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
     snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
     snprintf(config.index_dir, sizeof(config.index_dir), "%s", index_dir);
+    config.has_input_path = 1;
     snprintf(config.input_path, sizeof(config.input_path), "%s", path);
 
     if (!capture_run_program(&config, output_path)) {
@@ -390,6 +448,67 @@ static int capture_run_program(const AppConfig *config, const char *output_path)
     return result == 0;
 }
 
+static int capture_run_program_with_input(const AppConfig *config,
+                                          const char *input_text,
+                                          const char *output_path)
+{
+    FILE *input_file;
+    FILE *output_file;
+    int saved_stdin;
+    int saved_stdout;
+    int result;
+
+    input_file = tmpfile();
+    if (input_file == NULL) {
+        return 0;
+    }
+
+    output_file = fopen(output_path, "wb");
+    if (output_file == NULL) {
+        fclose(input_file);
+        return 0;
+    }
+
+    fputs(input_text, input_file);
+    rewind(input_file);
+
+    fflush(stdout);
+    saved_stdin = dup(STDIN_FILENO);
+    saved_stdout = dup(STDOUT_FILENO);
+    if (saved_stdin < 0 || saved_stdout < 0) {
+        if (saved_stdin >= 0) {
+            close(saved_stdin);
+        }
+        if (saved_stdout >= 0) {
+            close(saved_stdout);
+        }
+        fclose(input_file);
+        fclose(output_file);
+        return 0;
+    }
+
+    if (dup2(fileno(input_file), STDIN_FILENO) < 0 ||
+        dup2(fileno(output_file), STDOUT_FILENO) < 0) {
+        dup2(saved_stdin, STDIN_FILENO);
+        dup2(saved_stdout, STDOUT_FILENO);
+        close(saved_stdin);
+        close(saved_stdout);
+        fclose(input_file);
+        fclose(output_file);
+        return 0;
+    }
+
+    result = run_program(config);
+    fflush(stdout);
+    dup2(saved_stdin, STDIN_FILENO);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdin);
+    close(saved_stdout);
+    fclose(input_file);
+    fclose(output_file);
+    return result == 0;
+}
+
 static int create_temp_workspace(char *base_path,
                                  size_t base_size,
                                  char *schema_dir,
@@ -463,7 +582,7 @@ static int test_insert_and_select_where_execution(void)
     snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
     snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
 
-    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+    if (!write_text_file(schema_path, "id:int:pk,name:string,age:int\n")) {
         return 0;
     }
 
@@ -477,6 +596,7 @@ static int test_insert_and_select_where_execution(void)
     snprintf(insert_config.schema_dir, sizeof(insert_config.schema_dir), "%s", schema_dir);
     snprintf(insert_config.data_dir, sizeof(insert_config.data_dir), "%s", data_dir);
     snprintf(insert_config.index_dir, sizeof(insert_config.index_dir), "%s", index_dir);
+    insert_config.has_input_path = 1;
     snprintf(insert_config.input_path, sizeof(insert_config.input_path), "%s", insert_sql_path);
 
     if (run_program(&insert_config) != 0) {
@@ -496,6 +616,7 @@ static int test_insert_and_select_where_execution(void)
     snprintf(select_config.schema_dir, sizeof(select_config.schema_dir), "%s", schema_dir);
     snprintf(select_config.data_dir, sizeof(select_config.data_dir), "%s", data_dir);
     snprintf(select_config.index_dir, sizeof(select_config.index_dir), "%s", index_dir);
+    select_config.has_input_path = 1;
     snprintf(select_config.input_path, sizeof(select_config.input_path), "%s", select_sql_path);
 
     if (!capture_run_program(&select_config, output_path)) {
@@ -553,7 +674,7 @@ static int test_btree_index_persistence_and_scan(void)
     snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
     snprintf(index_path, sizeof(index_path), "%s/idx_users_age.idx", index_dir);
 
-    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+    if (!write_text_file(schema_path, "id:int:pk,name:string,age:int\n")) {
         return 0;
     }
 
@@ -567,6 +688,7 @@ static int test_btree_index_persistence_and_scan(void)
     snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
     snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
     snprintf(config.index_dir, sizeof(config.index_dir), "%s", index_dir);
+    config.has_input_path = 1;
     snprintf(config.input_path, sizeof(config.input_path), "%s", insert_sql_path);
 
     if (run_program(&config) != 0) {
@@ -680,7 +802,7 @@ static int test_btree_duplicate_split_query(void)
     snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
     snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
 
-    if (!write_text_file(schema_path, "id:int,age:int\n")) {
+    if (!write_text_file(schema_path, "id:int:pk,age:int\n")) {
         return 0;
     }
 
@@ -707,6 +829,7 @@ static int test_btree_duplicate_split_query(void)
     snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
     snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
     snprintf(config.index_dir, sizeof(config.index_dir), "%s", index_dir);
+    config.has_input_path = 1;
     snprintf(config.input_path, sizeof(config.input_path), "%s", insert_sql_path);
 
     if (run_program(&config) != 0) {
@@ -775,6 +898,129 @@ static int test_btree_duplicate_split_query(void)
     return file_equals_text(output_path, expected_output);
 }
 
+static int test_interactive_insert_and_select(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char index_dir[256];
+    char output_path[256];
+    char schema_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               index_dir,
+                               sizeof(index_dir),
+                               "sqlproc_repl_test_")) {
+        return 0;
+    }
+
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+
+    if (!write_text_file(schema_path, "id:int:pk,name:string,age:int\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.index_dir, sizeof(config.index_dir), "%s", index_dir);
+
+    if (!capture_run_program_with_input(&config,
+                                        "INSERT INTO users VALUES (1, 'park', 40);\n"
+                                        "SELECT * FROM users;\n"
+                                        "quit\n",
+                                        output_path)) {
+        return 0;
+    }
+
+    return file_equals_text(output_path, "id\tname\tage\n1\tpark\t40\n");
+}
+
+static int test_primary_key_duplicate_fail(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char index_dir[256];
+    char sql_path[256];
+    char data_path[256];
+    char schema_path[256];
+    FILE *null_file;
+    int saved_stderr;
+    int result;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               index_dir,
+                               sizeof(index_dir),
+                               "sqlproc_pk_test_")) {
+        return 0;
+    }
+
+    snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+
+    if (!write_text_file(schema_path, "id:int:pk,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(sql_path,
+                         "INSERT INTO users VALUES (1, 'kim', 20);"
+                         "INSERT INTO users VALUES (1, 'lee', 30);\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    config.has_input_path = 1;
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.index_dir, sizeof(config.index_dir), "%s", index_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", sql_path);
+
+    null_file = fopen("/dev/null", "wb");
+    if (null_file == NULL) {
+        return 0;
+    }
+
+    fflush(stderr);
+    saved_stderr = dup(STDERR_FILENO);
+    if (saved_stderr < 0) {
+        fclose(null_file);
+        return 0;
+    }
+
+    if (dup2(fileno(null_file), STDERR_FILENO) < 0) {
+        close(saved_stderr);
+        fclose(null_file);
+        return 0;
+    }
+
+    result = run_program(&config);
+    fflush(stderr);
+    dup2(saved_stderr, STDERR_FILENO);
+    close(saved_stderr);
+    fclose(null_file);
+
+    if (result == 0) {
+        return 0;
+    }
+
+    return file_equals_text(data_path, "id,name,age\n1,kim,20\n");
+}
+
 int main(void)
 {
     if (!test_parse_arguments_success()) {
@@ -787,6 +1033,11 @@ int main(void)
         return 1;
     }
 
+    if (!test_parse_arguments_repl_success()) {
+        fprintf(stderr, "test_parse_arguments_repl_success failed\n");
+        return 1;
+    }
+
     if (!test_tokenize_select()) {
         fprintf(stderr, "test_tokenize_select failed\n");
         return 1;
@@ -794,6 +1045,11 @@ int main(void)
 
     if (!test_parse_insert_statement()) {
         fprintf(stderr, "test_parse_insert_statement failed\n");
+        return 1;
+    }
+
+    if (!test_parse_insert_without_column_list()) {
+        fprintf(stderr, "test_parse_insert_without_column_list failed\n");
         return 1;
     }
 
@@ -829,6 +1085,16 @@ int main(void)
 
     if (!test_btree_duplicate_split_query()) {
         fprintf(stderr, "test_btree_duplicate_split_query failed\n");
+        return 1;
+    }
+
+    if (!test_interactive_insert_and_select()) {
+        fprintf(stderr, "test_interactive_insert_and_select failed\n");
+        return 1;
+    }
+
+    if (!test_primary_key_duplicate_fail()) {
+        fprintf(stderr, "test_primary_key_duplicate_fail failed\n");
         return 1;
     }
 

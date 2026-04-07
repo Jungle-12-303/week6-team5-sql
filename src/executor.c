@@ -408,32 +408,46 @@ static int validate_where_clause(const TableSchema *schema,
     return 1;
 }
 
-static int execute_insert(const AppConfig *config,
-                          const InsertStatement *statement,
-                          ErrorInfo *error)
+static int build_insert_row_values(const TableSchema *schema,
+                                   const InsertStatement *statement,
+                                   char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
+                                   SourceLocation value_locations[SQLPROC_MAX_COLUMNS],
+                                   ErrorInfo *error)
 {
-    TableSchema schema;
-    char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN];
-    char path[EXECUTOR_MAX_PATH_LEN];
     int used_columns[SQLPROC_MAX_COLUMNS];
-    FILE *file;
-    long row_offset;
     int i;
-    int changed_index;
-    ErrorInfo update_error;
-    ErrorInfo rebuild_error;
 
-    if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
-        return 0;
-    }
-
-    memset(row_values, 0, sizeof(row_values));
     memset(used_columns, 0, sizeof(used_columns));
+    memset(row_values, 0, sizeof(char[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN]));
+    memset(value_locations, 0, sizeof(SourceLocation) * SQLPROC_MAX_COLUMNS);
+
+    if (!statement->has_column_list) {
+        if (statement->value_count != schema->column_count) {
+            set_runtime_error(error,
+                              "VALUES 값 수가 스키마 컬럼 수와 일치하지 않습니다.",
+                              statement->table_location);
+            return 0;
+        }
+
+        for (i = 0; i < schema->column_count; i++) {
+            if (!validate_literal_type(schema->columns[i].type, &statement->values[i])) {
+                set_runtime_error(error,
+                                  "INSERT 값 타입이 스키마와 맞지 않습니다.",
+                                  statement->values[i].location);
+                return 0;
+            }
+
+            snprintf(row_values[i], sizeof(row_values[i]), "%s", statement->values[i].text);
+            value_locations[i] = statement->values[i].location;
+        }
+
+        return 1;
+    }
 
     for (i = 0; i < statement->column_count; i++) {
         int schema_index;
 
-        schema_index = find_schema_column(&schema, statement->column_names[i]);
+        schema_index = find_schema_column(schema, statement->column_names[i]);
         if (schema_index < 0) {
             set_runtime_error(error,
                               "INSERT 대상 컬럼이 스키마에 없습니다.",
@@ -448,7 +462,7 @@ static int execute_insert(const AppConfig *config,
             return 0;
         }
 
-        if (!validate_literal_type(schema.columns[schema_index].type,
+        if (!validate_literal_type(schema->columns[schema_index].type,
                                    &statement->values[i])) {
             set_runtime_error(error,
                               "INSERT 값 타입이 스키마와 맞지 않습니다.",
@@ -458,7 +472,84 @@ static int execute_insert(const AppConfig *config,
 
         snprintf(row_values[schema_index], sizeof(row_values[schema_index]), "%s",
                  statement->values[i].text);
+        value_locations[schema_index] = statement->values[i].location;
         used_columns[schema_index] = 1;
+    }
+
+    return 1;
+}
+
+static int validate_primary_key_insert(FILE *file,
+                                       const TableSchema *schema,
+                                       char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
+                                       SourceLocation value_locations[SQLPROC_MAX_COLUMNS],
+                                       ErrorInfo *error)
+{
+    char line[EXECUTOR_MAX_ROW_LEN];
+    char existing_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN];
+    int value_count;
+    int pk_index;
+
+    pk_index = schema->primary_key_column_index;
+    if (pk_index < 0) {
+        return 1;
+    }
+
+    if (row_values[pk_index][0] == '\0') {
+        set_runtime_error(error,
+                          "PRIMARY KEY 컬럼 값이 필요합니다.",
+                          value_locations[pk_index]);
+        return 0;
+    }
+
+    rewind(file);
+    if (fgets(line, sizeof(line), file) == NULL) {
+        set_file_error(error, "데이터 파일 헤더를 읽을 수 없습니다.");
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), file) != NULL) {
+        if (!parse_csv_line(line, existing_values, &value_count)) {
+            set_file_error(error, "기존 데이터 행 형식이 잘못되었습니다.");
+            return 0;
+        }
+
+        if (value_count != schema->column_count) {
+            set_file_error(error, "기존 데이터 행 컬럼 수가 스키마와 다릅니다.");
+            return 0;
+        }
+
+        if (strcmp(existing_values[pk_index], row_values[pk_index]) == 0) {
+            set_runtime_error(error,
+                              "PRIMARY KEY 값이 이미 존재합니다.",
+                              value_locations[pk_index]);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int execute_insert(const AppConfig *config,
+                          const InsertStatement *statement,
+                          ErrorInfo *error)
+{
+    TableSchema schema;
+    char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN];
+    SourceLocation value_locations[SQLPROC_MAX_COLUMNS];
+    char path[EXECUTOR_MAX_PATH_LEN];
+    FILE *file;
+    long row_offset;
+    int changed_index;
+    ErrorInfo update_error;
+    ErrorInfo rebuild_error;
+
+    if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
+        return 0;
+    }
+
+    if (!build_insert_row_values(&schema, statement, row_values, value_locations, error)) {
+        return 0;
     }
 
     if (!ensure_data_file(config, &schema, error)) {
@@ -469,6 +560,11 @@ static int execute_insert(const AppConfig *config,
     file = fopen(path, "rb+");
     if (file == NULL) {
         set_file_error(error, "데이터 파일을 열 수 없습니다.");
+        return 0;
+    }
+
+    if (!validate_primary_key_insert(file, &schema, row_values, value_locations, error)) {
+        fclose(file);
         return 0;
     }
 

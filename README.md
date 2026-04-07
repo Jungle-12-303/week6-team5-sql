@@ -1,6 +1,6 @@
 # 초심자 친화형 C99 SQL 처리기
 
-파일 기반으로 동작하는 작은 SQL 처리기입니다.
+CLI에서 SQL을 계속 입력하며 실행할 수 있는 작은 SQL 처리기입니다.
 초심자가 읽기 쉽도록 `C99`의 기본 문법만 사용했고, 어려운 흐름에는
 한국어 주석을 붙였습니다.
 
@@ -15,7 +15,8 @@
 ## 지원 SQL
 
 ```sql
-INSERT INTO users (id, name, age) VALUES (1, 'kim', 20);
+INSERT INTO users VALUES (1, 'kim', 20);
+INSERT INTO users (id, name, age) VALUES (2, 'lee', 30);
 SELECT * FROM users;
 SELECT name, age FROM users WHERE age >= 20;
 SELECT * FROM users WHERE age >= 20 AND id = 1;
@@ -79,6 +80,25 @@ mkdir -p ./demo-data ./demo-indexes
 ./build/sqlproc \
   --schema-dir ./examples/schemas \
   --data-dir ./demo-data \
+  --index-dir ./demo-indexes
+```
+
+프롬프트가 뜨면 아래처럼 문장을 계속 입력합니다.
+
+```sql
+INSERT INTO users VALUES (1, 'kim', 20);
+INSERT INTO users VALUES (2, 'lee', 30);
+CREATE INDEX idx_users_age ON users(age);
+SELECT * FROM users;
+quit
+```
+
+배치 실행이 필요하면 SQL 파일 경로를 마지막 인자로 넘길 수도 있습니다.
+
+```bash
+./build/sqlproc \
+  --schema-dir ./examples/schemas \
+  --data-dir ./demo-data \
   --index-dir ./demo-indexes \
   ./examples/demo.sql
 ```
@@ -95,11 +115,12 @@ mkdir -p ./demo-data ./demo-indexes
 경로 규칙은 `schemas/<table>.schema`입니다.
 
 ```text
-id:int,name:string,age:int
+id:int:pk,name:string,age:int
 ```
 
 - 컬럼 순서가 CSV 헤더 순서가 됩니다.
 - 타입은 `int` 또는 `string`만 사용합니다.
+- `:pk`를 붙인 컬럼은 PRIMARY KEY로 동작하며 중복 `INSERT`를 막습니다.
 
 ### 2. 데이터 파일
 
@@ -139,11 +160,12 @@ id,name,age
 
 프로그램은 아래 순서로 동작합니다.
 
-1. SQL 파일을 읽습니다.
+1. CLI 입력 또는 SQL 파일에서 문장을 읽습니다.
 2. 토큰으로 나눕니다.
 3. 수동 파서로 AST를 만듭니다.
 4. 실행기가 문장 종류에 따라 파일 입출력을 수행합니다.
-5. 인덱스가 있으면 row offset 후보를 먼저 모으고, 나머지 조건은 다시 검사합니다.
+5. PK가 있으면 `INSERT` 전에 중복 키를 검사합니다.
+6. 인덱스가 있으면 row offset 후보를 먼저 모으고, 나머지 조건은 다시 검사합니다.
 
 ## 초심자에게 중요한 코드 읽기 포인트
 
