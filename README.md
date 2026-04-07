@@ -13,4 +13,5 @@
 ```bash
 make
 make test
+./build/sqlproc --schema-dir ./schemas --data-dir ./data --index-dir ./indexes input.sql
 ```
