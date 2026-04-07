@@ -64,6 +64,11 @@ typedef enum {
 } CompareOperator;
 
 typedef struct {
+    int line;
+    int column;
+} SourceLocation;
+
+typedef struct {
     char schema_dir[256];
     char data_dir[256];
     char index_dir[256];
@@ -91,11 +96,14 @@ typedef struct {
 typedef struct {
     LiteralType type;
     char text[SQLPROC_MAX_VALUE_LEN];
+    SourceLocation location;
 } LiteralValue;
 
 typedef struct {
     char column_name[SQLPROC_MAX_NAME_LEN];
+    SourceLocation column_location;
     CompareOperator operator_type;
+    SourceLocation operator_location;
     LiteralValue value;
 } Predicate;
 
@@ -106,27 +114,35 @@ typedef struct {
 
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
+    SourceLocation table_location;
     int column_count;
     char column_names[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_NAME_LEN];
+    SourceLocation column_locations[SQLPROC_MAX_COLUMNS];
     LiteralValue values[SQLPROC_MAX_COLUMNS];
 } InsertStatement;
 
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
+    SourceLocation table_location;
     int select_all;
     int column_count;
     char column_names[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_NAME_LEN];
+    SourceLocation column_locations[SQLPROC_MAX_COLUMNS];
     WhereClause where_clause;
 } SelectStatement;
 
 typedef struct {
     char index_name[SQLPROC_MAX_NAME_LEN];
+    SourceLocation index_location;
     char table_name[SQLPROC_MAX_NAME_LEN];
+    SourceLocation table_location;
     char column_name[SQLPROC_MAX_NAME_LEN];
+    SourceLocation column_location;
 } CreateIndexStatement;
 
 typedef struct {
     StatementType type;
+    SourceLocation location;
     InsertStatement insert_statement;
     SelectStatement select_statement;
     CreateIndexStatement create_index_statement;

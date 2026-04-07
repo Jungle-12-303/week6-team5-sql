@@ -25,13 +25,11 @@ static const Token *previous_token(ParserState *state)
     return &state->tokens->items[state->position - 1];
 }
 
-static int advance_token(ParserState *state)
+static void advance_token(ParserState *state)
 {
     if (state->position < state->tokens->count - 1) {
         state->position += 1;
     }
-
-    return 1;
 }
 
 static int token_matches(ParserState *state, TokenType expected_type)
@@ -50,7 +48,10 @@ static int consume_token(ParserState *state, TokenType expected_type, ErrorInfo 
     return 1;
 }
 
-static int copy_name(char dest[SQLPROC_MAX_NAME_LEN], const Token *token, ErrorInfo *error)
+static int copy_name(char dest[SQLPROC_MAX_NAME_LEN],
+                     SourceLocation *location,
+                     const Token *token,
+                     ErrorInfo *error)
 {
     if ((int)strlen(token->text) >= SQLPROC_MAX_NAME_LEN) {
         set_error(error, token, "이름 길이가 너무 깁니다.");
@@ -58,17 +59,26 @@ static int copy_name(char dest[SQLPROC_MAX_NAME_LEN], const Token *token, ErrorI
     }
 
     snprintf(dest, SQLPROC_MAX_NAME_LEN, "%s", token->text);
+
+    if (location != NULL) {
+        location->line = token->line;
+        location->column = token->column;
+    }
+
     return 1;
 }
 
-static int parse_identifier(ParserState *state, char dest[SQLPROC_MAX_NAME_LEN], ErrorInfo *error)
+static int parse_identifier(ParserState *state,
+                            char dest[SQLPROC_MAX_NAME_LEN],
+                            SourceLocation *location,
+                            ErrorInfo *error)
 {
     if (!token_matches(state, TOKEN_IDENTIFIER)) {
         set_error(error, current_token(state), "식별자가 필요합니다.");
         return 0;
     }
 
-    if (!copy_name(dest, current_token(state), error)) {
+    if (!copy_name(dest, location, current_token(state), error)) {
         return 0;
     }
 
@@ -81,6 +91,8 @@ static int parse_literal(ParserState *state, LiteralValue *value, ErrorInfo *err
     if (token_matches(state, TOKEN_NUMBER)) {
         value->type = LITERAL_INT;
         snprintf(value->text, sizeof(value->text), "%s", current_token(state)->text);
+        value->location.line = current_token(state)->line;
+        value->location.column = current_token(state)->column;
         advance_token(state);
         return 1;
     }
@@ -88,6 +100,8 @@ static int parse_literal(ParserState *state, LiteralValue *value, ErrorInfo *err
     if (token_matches(state, TOKEN_STRING)) {
         value->type = LITERAL_STRING;
         snprintf(value->text, sizeof(value->text), "%s", current_token(state)->text);
+        value->location.line = current_token(state)->line;
+        value->location.column = current_token(state)->column;
         advance_token(state);
         return 1;
     }
@@ -134,9 +148,12 @@ static int parse_operator(ParserState *state, CompareOperator *operator_type, Er
 
 static int parse_predicate(ParserState *state, Predicate *predicate, ErrorInfo *error)
 {
-    if (!parse_identifier(state, predicate->column_name, error)) {
+    if (!parse_identifier(state, predicate->column_name, &predicate->column_location, error)) {
         return 0;
     }
+
+    predicate->operator_location.line = current_token(state)->line;
+    predicate->operator_location.column = current_token(state)->column;
 
     if (!parse_operator(state, &predicate->operator_type, error)) {
         return 0;
@@ -195,35 +212,6 @@ static int parse_where_clause(ParserState *state, WhereClause *where_clause, Err
     return 1;
 }
 
-static int parse_column_name_list(ParserState *state,
-                                  char column_names[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_NAME_LEN],
-                                  int *column_count,
-                                  ErrorInfo *error)
-{
-    *column_count = 0;
-
-    while (1) {
-        if (*column_count >= SQLPROC_MAX_COLUMNS) {
-            set_error(error, current_token(state), "컬럼 수가 최대 개수를 넘었습니다.");
-            return 0;
-        }
-
-        if (!parse_identifier(state, column_names[*column_count], error)) {
-            return 0;
-        }
-
-        *column_count += 1;
-
-        if (!token_matches(state, TOKEN_COMMA)) {
-            break;
-        }
-
-        advance_token(state);
-    }
-
-    return 1;
-}
-
 static int parse_value_list(ParserState *state,
                             LiteralValue values[SQLPROC_MAX_COLUMNS],
                             int expected_count,
@@ -267,6 +255,8 @@ static int parse_insert_statement(ParserState *state, Statement *statement, Erro
     insert_statement = &statement->insert_statement;
     memset(insert_statement, 0, sizeof(*insert_statement));
     statement->type = STATEMENT_INSERT;
+    statement->location.line = current_token(state)->line;
+    statement->location.column = current_token(state)->column;
 
     if (!consume_token(state, TOKEN_KEYWORD_INSERT, error, "INSERT 키워드가 필요합니다.")) {
         return 0;
@@ -276,7 +266,10 @@ static int parse_insert_statement(ParserState *state, Statement *statement, Erro
         return 0;
     }
 
-    if (!parse_identifier(state, insert_statement->table_name, error)) {
+    if (!parse_identifier(state,
+                          insert_statement->table_name,
+                          &insert_statement->table_location,
+                          error)) {
         return 0;
     }
 
@@ -284,11 +277,28 @@ static int parse_insert_statement(ParserState *state, Statement *statement, Erro
         return 0;
     }
 
-    if (!parse_column_name_list(state,
-                                insert_statement->column_names,
-                                &insert_statement->column_count,
-                                error)) {
-        return 0;
+    insert_statement->column_count = 0;
+
+    while (1) {
+        if (insert_statement->column_count >= SQLPROC_MAX_COLUMNS) {
+            set_error(error, current_token(state), "컬럼 수가 최대 개수를 넘었습니다.");
+            return 0;
+        }
+
+        if (!parse_identifier(state,
+                              insert_statement->column_names[insert_statement->column_count],
+                              &insert_statement->column_locations[insert_statement->column_count],
+                              error)) {
+            return 0;
+        }
+
+        insert_statement->column_count += 1;
+
+        if (!token_matches(state, TOKEN_COMMA)) {
+            break;
+        }
+
+        advance_token(state);
     }
 
     if (!consume_token(state, TOKEN_RPAREN, error, ") 가 필요합니다.")) {
@@ -324,6 +334,8 @@ static int parse_select_statement(ParserState *state, Statement *statement, Erro
     select_statement = &statement->select_statement;
     memset(select_statement, 0, sizeof(*select_statement));
     statement->type = STATEMENT_SELECT;
+    statement->location.line = current_token(state)->line;
+    statement->location.column = current_token(state)->column;
 
     if (!consume_token(state, TOKEN_KEYWORD_SELECT, error, "SELECT 키워드가 필요합니다.")) {
         return 0;
@@ -333,11 +345,28 @@ static int parse_select_statement(ParserState *state, Statement *statement, Erro
         select_statement->select_all = 1;
         advance_token(state);
     } else {
-        if (!parse_column_name_list(state,
-                                    select_statement->column_names,
-                                    &select_statement->column_count,
-                                    error)) {
-            return 0;
+        select_statement->column_count = 0;
+
+        while (1) {
+            if (select_statement->column_count >= SQLPROC_MAX_COLUMNS) {
+                set_error(error, current_token(state), "컬럼 수가 최대 개수를 넘었습니다.");
+                return 0;
+            }
+
+            if (!parse_identifier(state,
+                                  select_statement->column_names[select_statement->column_count],
+                                  &select_statement->column_locations[select_statement->column_count],
+                                  error)) {
+                return 0;
+            }
+
+            select_statement->column_count += 1;
+
+            if (!token_matches(state, TOKEN_COMMA)) {
+                break;
+            }
+
+            advance_token(state);
         }
     }
 
@@ -345,7 +374,10 @@ static int parse_select_statement(ParserState *state, Statement *statement, Erro
         return 0;
     }
 
-    if (!parse_identifier(state, select_statement->table_name, error)) {
+    if (!parse_identifier(state,
+                          select_statement->table_name,
+                          &select_statement->table_location,
+                          error)) {
         return 0;
     }
 
@@ -359,6 +391,8 @@ static int parse_create_index_statement(ParserState *state, Statement *statement
     create_index_statement = &statement->create_index_statement;
     memset(create_index_statement, 0, sizeof(*create_index_statement));
     statement->type = STATEMENT_CREATE_INDEX;
+    statement->location.line = current_token(state)->line;
+    statement->location.column = current_token(state)->column;
 
     if (!consume_token(state, TOKEN_KEYWORD_CREATE, error, "CREATE 키워드가 필요합니다.")) {
         return 0;
@@ -368,7 +402,10 @@ static int parse_create_index_statement(ParserState *state, Statement *statement
         return 0;
     }
 
-    if (!parse_identifier(state, create_index_statement->index_name, error)) {
+    if (!parse_identifier(state,
+                          create_index_statement->index_name,
+                          &create_index_statement->index_location,
+                          error)) {
         return 0;
     }
 
@@ -376,7 +413,10 @@ static int parse_create_index_statement(ParserState *state, Statement *statement
         return 0;
     }
 
-    if (!parse_identifier(state, create_index_statement->table_name, error)) {
+    if (!parse_identifier(state,
+                          create_index_statement->table_name,
+                          &create_index_statement->table_location,
+                          error)) {
         return 0;
     }
 
@@ -384,7 +424,10 @@ static int parse_create_index_statement(ParserState *state, Statement *statement
         return 0;
     }
 
-    if (!parse_identifier(state, create_index_statement->column_name, error)) {
+    if (!parse_identifier(state,
+                          create_index_statement->column_name,
+                          &create_index_statement->column_location,
+                          error)) {
         return 0;
     }
 
@@ -422,6 +465,11 @@ int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error
 
     state.tokens = tokens;
     state.position = 0;
+
+    if (token_matches(&state, TOKEN_EOF)) {
+        set_error(error, current_token(&state), "SQL 문장이 비어 있습니다.");
+        return 0;
+    }
 
     while (!token_matches(&state, TOKEN_EOF)) {
         if (program->count >= SQLPROC_MAX_STATEMENTS) {

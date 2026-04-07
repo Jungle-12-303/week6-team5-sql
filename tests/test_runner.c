@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sqlproc.h"
@@ -122,6 +123,14 @@ static int test_parse_insert_statement(void)
         return 0;
     }
 
+    if (program.items[0].insert_statement.values[1].location.line != 1) {
+        return 0;
+    }
+
+    if (program.items[0].insert_statement.values[1].location.column <= 0) {
+        return 0;
+    }
+
     return strcmp(program.items[0].insert_statement.values[1].text, "kim") == 0;
 }
 
@@ -164,6 +173,10 @@ static int test_parse_select_where_and_create_index(void)
         return 0;
     }
 
+    if (program.items[0].select_statement.where_clause.items[1].column_location.column <= 0) {
+        return 0;
+    }
+
     if (strcmp(program.items[1].create_index_statement.index_name, "idx_users_age") != 0) {
         return 0;
     }
@@ -189,6 +202,50 @@ static int test_parse_where_limit_fail(void)
     }
 
     return strstr(error.message, "최대 2개") != NULL;
+}
+
+static int test_run_program_success(void)
+{
+    const char *path;
+    FILE *file;
+    AppConfig config;
+
+    path = "/tmp/sqlproc_parser_success.sql";
+    file = fopen(path, "wb");
+    if (file == NULL) {
+        return 0;
+    }
+
+    fputs("SELECT * FROM users;", file);
+    fclose(file);
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.input_path, sizeof(config.input_path), "%s", path);
+
+    if (run_program(&config) != 0) {
+        remove(path);
+        return 0;
+    }
+
+    remove(path);
+    return 1;
+}
+
+static int test_parse_empty_sql_fail(void)
+{
+    TokenList tokens;
+    SqlProgram program;
+    ErrorInfo error;
+
+    if (!tokenize_sql("", &tokens, &error)) {
+        return 0;
+    }
+
+    if (parse_program(&tokens, &program, &error)) {
+        return 0;
+    }
+
+    return strstr(error.message, "비어") != NULL;
 }
 
 int main(void)
@@ -220,6 +277,16 @@ int main(void)
 
     if (!test_parse_where_limit_fail()) {
         fprintf(stderr, "test_parse_where_limit_fail failed\n");
+        return 1;
+    }
+
+    if (!test_run_program_success()) {
+        fprintf(stderr, "test_run_program_success failed\n");
+        return 1;
+    }
+
+    if (!test_parse_empty_sql_fail()) {
+        fprintf(stderr, "test_parse_empty_sql_fail failed\n");
         return 1;
     }
 

@@ -313,8 +313,9 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
             if (!read_string(sql_text, &index, line, column, tokens, error)) {
                 return 0;
             }
-            column = index >= 0 ? column + (int)strlen(tokens->items[tokens->count - 1].text) + 2
-                                : column;
+
+            /* 문자열은 내용 길이에 여닫는 작은따옴표 2개까지 함께 소비합니다. */
+            column += (int)strlen(tokens->items[tokens->count - 1].text) + 2;
             continue;
         }
 
