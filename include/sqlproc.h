@@ -75,6 +75,7 @@ typedef struct {
     char data_dir[256];
     char index_dir[256];
     char input_path[256];
+    int has_input_path;
 } AppConfig;
 
 typedef struct {
@@ -104,11 +105,13 @@ typedef struct {
 typedef struct {
     char name[SQLPROC_MAX_NAME_LEN];
     DataType type;
+    int is_primary_key;
 } ColumnSchema;
 
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     int column_count;
+    int primary_key_column_index;
     ColumnSchema columns[SQLPROC_MAX_COLUMNS];
 } TableSchema;
 
@@ -128,7 +131,9 @@ typedef struct {
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation table_location;
+    int has_column_list;
     int column_count;
+    int value_count;
     char column_names[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_NAME_LEN];
     SourceLocation column_locations[SQLPROC_MAX_COLUMNS];
     LiteralValue values[SQLPROC_MAX_COLUMNS];
