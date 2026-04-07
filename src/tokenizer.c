@@ -4,8 +4,14 @@
 
 #include "sqlproc.h"
 
+/*
+ * tokenizer.c는 SQL 문자열을 TokenList로 자르는 모듈입니다.
+ * 파서는 원본 문자열 대신 이 토큰 배열을 입력으로 받아 문법을 해석합니다.
+ */
+
 static void set_error(ErrorInfo *error, const char *message, int line, int column)
 {
+    /* 토크나이저 오류는 현재 줄/열 번호를 함께 저장합니다. */
     snprintf(error->message, sizeof(error->message), "%s", message);
     error->line = line;
     error->column = column;
@@ -15,6 +21,7 @@ static void to_lowercase_copy(char *dest, size_t dest_size, const char *src)
 {
     size_t i;
 
+    /* 키워드 비교와 식별자 정규화를 위해 소문자 복사본을 만듭니다. */
     for (i = 0; i + 1 < dest_size && src[i] != '\0'; i++) {
         dest[i] = (char)tolower((unsigned char)src[i]);
     }
@@ -24,6 +31,7 @@ static void to_lowercase_copy(char *dest, size_t dest_size, const char *src)
 
 static TokenType keyword_type(const char *text)
 {
+    /* 읽은 단어가 예약어인지 일반 식별자인지 구분합니다. */
     if (strcmp(text, "insert") == 0) {
         return TOKEN_KEYWORD_INSERT;
     }
@@ -76,6 +84,7 @@ static int append_token(TokenList *tokens,
 {
     Token *token;
 
+    /* TokenList 뒤에 새 토큰 1개를 추가합니다. */
     if (tokens->count >= SQLPROC_MAX_TOKENS) {
         set_error(error, "토큰 수가 최대 개수를 넘었습니다.", line, column);
         return 0;
@@ -103,6 +112,10 @@ static int read_word(const char *sql_text,
     int length;
     TokenType type;
 
+    /*
+     * 알파벳/숫자/밑줄로 이어진 단어를 읽습니다.
+     * 예: users, idx_users_age, select
+     */
     start = *index;
     while (isalnum((unsigned char)sql_text[*index]) || sql_text[*index] == '_') {
         *index += 1;
@@ -119,6 +132,7 @@ static int read_word(const char *sql_text,
     to_lowercase_copy(lower_text, sizeof(lower_text), raw_text);
     type = keyword_type(lower_text);
 
+    /* 식별자는 소문자로 저장하고, 키워드는 읽은 형태 그대로 토큰 종류만 바꿉니다. */
     if (type == TOKEN_IDENTIFIER) {
         return append_token(tokens, type, lower_text, line, column, error);
     }
@@ -137,6 +151,7 @@ static int read_number(const char *sql_text,
     int start;
     int length;
 
+    /* 정수 리터럴을 읽습니다. 현재 구현은 선행 '-'도 허용합니다. */
     start = *index;
 
     if (sql_text[*index] == '-') {
@@ -168,6 +183,7 @@ static int read_string(const char *sql_text,
     char string_text[SQLPROC_MAX_VALUE_LEN];
     int text_index;
 
+    /* 작은따옴표로 감싼 문자열 리터럴을 읽고, 내부 내용만 토큰에 저장합니다. */
     *index += 1;
     text_index = 0;
 
@@ -201,6 +217,10 @@ static int read_symbol(const char *sql_text,
 {
     char text[3];
 
+    /*
+     * 기호 토큰을 읽습니다.
+     * 한 글자 기호와 두 글자 비교 연산자(<=, >=)를 모두 처리합니다.
+     */
     text[0] = sql_text[*index];
     text[1] = '\0';
     text[2] = '\0';
@@ -269,6 +289,10 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
     int line;
     int column;
 
+    /*
+     * SQL 문자열 전체를 왼쪽부터 훑으면서 토큰 배열을 만듭니다.
+     * 공백은 건너뛰고, line/column은 파서 오류 메시지를 위해 계속 추적합니다.
+     */
     memset(tokens, 0, sizeof(*tokens));
     memset(error, 0, sizeof(*error));
 
@@ -310,6 +334,7 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
         }
 
         if (sql_text[index] == '\'') {
+            /* 문자열은 작은따옴표를 포함해 소비한 길이만큼 column을 갱신합니다. */
             if (!read_string(sql_text, &index, line, column, tokens, error)) {
                 return 0;
             }
@@ -331,6 +356,7 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
 
 const char *token_type_name(TokenType type)
 {
+    /* 디버깅과 테스트에서 읽기 쉬운 토큰 이름 문자열입니다. */
     if (type == TOKEN_EOF) {
         return "EOF";
     }

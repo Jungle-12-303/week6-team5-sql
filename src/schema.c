@@ -4,8 +4,15 @@
 
 #include "sqlproc.h"
 
+/*
+ * schema.c는 <table>.schema 파일을 읽어 TableSchema 구조체로 바꾸는 모듈입니다.
+ * 현재 형식 예:
+ *   id:int:pk,name:string,age:int
+ */
+
 static void set_error(ErrorInfo *error, const char *message)
 {
+    /* 스키마 로더 오류는 파일 단위 오류라 줄/열 없이 메시지만 저장합니다. */
     snprintf(error->message, sizeof(error->message), "%s", message);
     error->line = 0;
     error->column = 0;
@@ -15,6 +22,7 @@ static void to_lowercase_copy(char *dest, size_t dest_size, const char *src)
 {
     size_t i;
 
+    /* 컬럼 이름, 타입, 제약 조건을 대소문자 영향 없이 다루기 위한 소문자 복사입니다. */
     for (i = 0; i + 1 < dest_size && src[i] != '\0'; i++) {
         dest[i] = (char)tolower((unsigned char)src[i]);
     }
@@ -24,6 +32,7 @@ static void to_lowercase_copy(char *dest, size_t dest_size, const char *src)
 
 static int parse_data_type(const char *text, DataType *data_type)
 {
+    /* 스키마 파일의 타입 문자열을 내부 DataType enum으로 바꿉니다. */
     if (strcmp(text, "int") == 0) {
         *data_type = DATA_TYPE_INT;
         return 1;
@@ -48,12 +57,20 @@ int load_table_schema(const char *schema_dir,
     char *cursor;
     FILE *file;
 
+    /*
+     * 실행기/인덱스 모듈이 사용할 TableSchema를 채웁니다.
+     * - table_name
+     * - 컬럼 개수와 순서
+     * - 각 컬럼 타입
+     * - PRIMARY KEY 컬럼 인덱스
+     */
     memset(schema, 0, sizeof(*schema));
     memset(error, 0, sizeof(*error));
     snprintf(schema->table_name, sizeof(schema->table_name), "%s", table_name);
     schema->primary_key_column_index = -1;
     snprintf(path, sizeof(path), "%s/%s.schema", schema_dir, table_name);
 
+    /* 테이블 이름에 대응하는 스키마 파일 1개를 읽습니다. */
     file = fopen(path, "rb");
     if (file == NULL) {
         set_error(error, "스키마 파일을 열 수 없습니다.");
@@ -106,6 +123,7 @@ int load_table_schema(const char *schema_dir,
         *colon = '\0';
         modifier = strchr(colon + 1, ':');
         if (modifier != NULL) {
+            /* 세 번째 항목이 있으면 현재는 pk 제약만 지원합니다. */
             *modifier = '\0';
             modifier += 1;
             to_lowercase_copy(lower_modifier, sizeof(lower_modifier), modifier);
@@ -122,6 +140,7 @@ int load_table_schema(const char *schema_dir,
         }
 
         if (lower_modifier[0] != '\0') {
+            /* PRIMARY KEY는 현재 단일 컬럼만 허용합니다. */
             if (strcmp(lower_modifier, "pk") != 0) {
                 set_error(error, "지원하지 않는 스키마 제약 조건입니다.");
                 return 0;

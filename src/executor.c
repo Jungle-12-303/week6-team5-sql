@@ -6,6 +6,13 @@
 
 #include "sqlproc.h"
 
+/*
+ * executor.c는 파서가 만든 AST를 실제 파일 입출력 동작으로 수행하는 모듈입니다.
+ * - INSERT: CSV 파일에 행을 추가하고 필요하면 인덱스도 갱신
+ * - SELECT: CSV를 읽어 WHERE를 검사하고 결과 출력
+ * - CREATE INDEX: 인덱스 모듈에 생성 작업 위임
+ */
+
 #define EXECUTOR_MAX_PATH_LEN 512
 #define EXECUTOR_MAX_ROW_LEN 1024
 
@@ -18,6 +25,7 @@ static void set_runtime_error(ErrorInfo *error,
                               const char *message,
                               SourceLocation location)
 {
+    /* SQL 문장 자체와 관련된 오류는 line/column 위치를 함께 저장합니다. */
     snprintf(error->message, sizeof(error->message), "%s", message);
     error->line = location.line;
     error->column = location.column;
@@ -25,6 +33,7 @@ static void set_runtime_error(ErrorInfo *error,
 
 static void set_file_error(ErrorInfo *error, const char *message)
 {
+    /* 파일 시스템/CSV 형식 오류는 SQL 위치 없이 메시지만 기록합니다. */
     snprintf(error->message, sizeof(error->message), "%s", message);
     error->line = 0;
     error->column = 0;
@@ -36,6 +45,7 @@ static void build_table_path(char *dest,
                              const char *table_name,
                              const char *extension)
 {
+    /* data_dir/users.csv 같은 실제 파일 경로를 조립합니다. */
     snprintf(dest, dest_size, "%s/%s%s", base_dir, table_name, extension);
 }
 
@@ -43,6 +53,7 @@ static int find_schema_column(const TableSchema *schema, const char *name)
 {
     int i;
 
+    /* 컬럼 이름을 스키마 순서 인덱스로 바꿉니다. 찾지 못하면 -1입니다. */
     for (i = 0; i < schema->column_count; i++) {
         if (strcmp(schema->columns[i].name, name) == 0) {
             return i;
@@ -54,6 +65,7 @@ static int find_schema_column(const TableSchema *schema, const char *name)
 
 static int validate_literal_type(DataType data_type, const LiteralValue *value)
 {
+    /* INSERT/WHERE에서 리터럴 타입이 컬럼 타입과 맞는지 확인합니다. */
     if (data_type == DATA_TYPE_INT && value->type == LITERAL_INT) {
         return 1;
     }
@@ -70,6 +82,10 @@ static int write_csv_field(FILE *file, const char *text)
     int needs_quote;
     const char *cursor;
 
+    /*
+     * CSV 필드 1개를 안전하게 저장합니다.
+     * 쉼표/따옴표/개행이 있으면 큰따옴표로 감싸고 내부 따옴표는 이스케이프합니다.
+     */
     needs_quote = 0;
     for (cursor = text; *cursor != '\0'; cursor++) {
         if (*cursor == ',' || *cursor == '"' || *cursor == '\n') {
@@ -107,6 +123,7 @@ static int write_csv_row(FILE *file,
 {
     int i;
 
+    /* 컬럼 배열 1개를 CSV 한 줄로 저장합니다. */
     for (i = 0; i < value_count; i++) {
         if (i > 0) {
             if (fputc(',', file) == EOF) {
@@ -133,6 +150,10 @@ static int ensure_data_file(const AppConfig *config,
     FILE *file;
     int i;
 
+    /*
+     * 데이터 파일이 이미 있으면 헤더가 현재 스키마와 일치하는지 검증하고,
+     * 없으면 새 CSV 파일을 만들고 헤더를 기록합니다.
+     */
     build_table_path(path, sizeof(path), config->data_dir, schema->table_name, ".csv");
     file = fopen(path, "rb");
     if (file != NULL) {
@@ -207,6 +228,7 @@ static int parse_csv_line(const char *line,
     int text_index;
     int i;
 
+    /* CSV 한 줄을 컬럼 문자열 배열로 분해합니다. 큰따옴표 이스케이프도 처리합니다. */
     in_quotes = 0;
     row_index = 0;
     text_index = 0;
@@ -260,6 +282,7 @@ static int parse_int_text(const char *text, long *value)
 {
     char *end_pointer;
 
+    /* CSV 문자열이 정수로 완전히 해석되는지 검사하면서 long으로 변환합니다. */
     if (text[0] == '\0') {
         return 0;
     }
@@ -335,6 +358,7 @@ static int row_matches_where(const TableSchema *schema,
 {
     int i;
 
+    /* CSV 한 행이 WHERE 조건들을 모두 만족하는지 검사합니다. */
     for (i = 0; i < where_clause->count; i++) {
         int column_index;
         long unused_value;
@@ -385,6 +409,7 @@ static int validate_where_clause(const TableSchema *schema,
 {
     int i;
 
+    /* SELECT를 실행하기 전에 WHERE 절 자체가 스키마와 맞는지 미리 검증합니다. */
     for (i = 0; i < where_clause->count; i++) {
         int column_index;
 
@@ -417,6 +442,11 @@ static int build_insert_row_values(const TableSchema *schema,
     int used_columns[SQLPROC_MAX_COLUMNS];
     int i;
 
+    /*
+     * INSERT AST를 실제 "스키마 순서의 한 행 데이터"로 정렬합니다.
+     * - 컬럼 목록 생략 시: 스키마 순서 그대로 값 매핑
+     * - 컬럼 목록 명시 시: 이름을 찾아 해당 스키마 위치로 값 배치
+     */
     memset(used_columns, 0, sizeof(used_columns));
     memset(row_values, 0, sizeof(char[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN]));
     memset(value_locations, 0, sizeof(SourceLocation) * SQLPROC_MAX_COLUMNS);
@@ -490,6 +520,10 @@ static int validate_primary_key_insert(FILE *file,
     int value_count;
     int pk_index;
 
+    /*
+     * PRIMARY KEY가 있는 테이블이면 기존 CSV 전체를 읽어
+     * 같은 PK 값이 이미 있는지 확인합니다.
+     */
     pk_index = schema->primary_key_column_index;
     if (pk_index < 0) {
         return 1;
@@ -544,6 +578,15 @@ static int execute_insert(const AppConfig *config,
     ErrorInfo update_error;
     ErrorInfo rebuild_error;
 
+    /*
+     * INSERT 실행 흐름:
+     * 1. 스키마 로드
+     * 2. AST 값을 스키마 순서 행 데이터로 정리
+     * 3. CSV 헤더 준비
+     * 4. PK 중복 검사
+     * 5. CSV append
+     * 6. 관련 인덱스 갱신
+     */
     if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
         return 0;
     }
@@ -616,6 +659,7 @@ static int resolve_selected_columns(const TableSchema *schema,
 {
     int i;
 
+    /* SELECT * 또는 SELECT col1, col2 를 실제 스키마 인덱스 배열로 바꿉니다. */
     *selected_count = 0;
 
     if (statement->select_all) {
@@ -650,6 +694,7 @@ static void print_selected_header(const TableSchema *schema,
 {
     int i;
 
+    /* 출력 결과 첫 줄에 선택된 컬럼 이름들을 탭 구분으로 출력합니다. */
     for (i = 0; i < selected_count; i++) {
         if (i > 0) {
             fputc('\t', stdout);
@@ -669,6 +714,7 @@ static int read_row_at_offset(FILE *file,
 {
     char line[EXECUTOR_MAX_ROW_LEN];
 
+    /* 인덱스가 돌려준 row_offset 위치로 이동해 CSV 행 하나를 읽습니다. */
     if (fseek(file, row_offset, SEEK_SET) != 0) {
         set_file_error(error, "CSV 행 위치로 이동할 수 없습니다.");
         return 0;
@@ -702,6 +748,13 @@ static int execute_select(const AppConfig *config,
     int used_index;
     FILE *file;
 
+    /*
+     * SELECT 실행 흐름:
+     * 1. 스키마/선택 컬럼/WHERE 유효성 확인
+     * 2. 인덱스 사용 가능하면 후보 row offset 수집
+     * 3. CSV 헤더 검증
+     * 4. 인덱스 경로 또는 full scan 경로로 실제 행 출력
+     */
     if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
         return 0;
     }
@@ -871,6 +924,7 @@ static int execute_create_index(const AppConfig *config,
                                 const CreateIndexStatement *statement,
                                 ErrorInfo *error)
 {
+    /* CREATE INDEX 실제 구현은 btree_index.c로 위임합니다. */
     return create_index_from_statement(config, statement, error);
 }
 
@@ -878,6 +932,7 @@ int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInf
 {
     int i;
 
+    /* SqlProgram에 담긴 문장들을 앞에서부터 순서대로 실행합니다. */
     memset(error, 0, sizeof(*error));
 
     for (i = 0; i < program->count; i++) {
