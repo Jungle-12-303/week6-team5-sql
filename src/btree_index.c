@@ -6,6 +6,15 @@
 
 #include "sqlproc.h"
 
+/*
+ * btree_index.c는 디스크 영속형 B+ 트리 인덱스를 담당합니다.
+ * 역할:
+ * - CREATE INDEX 시 .idx 파일 생성
+ * - INSERT 뒤 인덱스 엔트리 추가
+ * - SELECT WHERE에서 인덱스를 이용해 row offset 후보 수집
+ * - 필요 시 CSV를 기준으로 인덱스 재구축
+ */
+
 #define INDEX_MAGIC "SQLIDX1"
 #define INDEX_VERSION 1
 #define INDEX_MAX_PATH_LEN 512
@@ -24,6 +33,13 @@ typedef struct {
     int root_node_id;
     int next_node_id;
 } IndexHeader;
+
+/*
+ * IndexHeader는 .idx 파일 맨 앞에 저장되는 메타데이터입니다.
+ * - 어떤 테이블/컬럼 인덱스인지
+ * - 루트 노드가 어디인지
+ * - 다음 새 노드 id가 무엇인지
+ */
 
 /*
  * leaf와 internal 노드를 같은 크기의 구조체로 저장합니다.
@@ -50,6 +66,7 @@ static int collect_table_index_paths(const AppConfig *config,
 
 static void set_file_error(ErrorInfo *error, const char *message)
 {
+    /* 인덱스 파일 입출력 오류는 SQL 위치 없이 메시지만 기록합니다. */
     snprintf(error->message, sizeof(error->message), "%s", message);
     error->line = 0;
     error->column = 0;
@@ -59,6 +76,7 @@ static void set_runtime_error(ErrorInfo *error,
                               const char *message,
                               SourceLocation location)
 {
+    /* CREATE INDEX 문 자체 문제는 SQL 위치 정보와 함께 저장합니다. */
     snprintf(error->message, sizeof(error->message), "%s", message);
     error->line = location.line;
     error->column = location.column;
@@ -69,11 +87,13 @@ static void build_index_path(char *dest,
                              const char *index_dir,
                              const char *index_name)
 {
+    /* index_dir/idx_users_age.idx 같은 인덱스 파일 경로를 조립합니다. */
     snprintf(dest, dest_size, "%s/%s.idx", index_dir, index_name);
 }
 
 static long node_offset(int node_id)
 {
+    /* node id를 실제 파일 오프셋으로 바꾸는 계산 함수입니다. */
     return (long)sizeof(IndexHeader) + ((long)node_id * (long)sizeof(BTreeNode));
 }
 
@@ -81,6 +101,7 @@ static int parse_int_text(const char *text, long *value)
 {
     char *end_pointer;
 
+    /* 문자열 키를 정수 키로 해석할 수 있는지 확인하면서 long으로 바꿉니다. */
     if (text[0] == '\0') {
         return 0;
     }
@@ -91,6 +112,7 @@ static int parse_int_text(const char *text, long *value)
 
 static int compare_keys(int data_type, const char *left, const char *right)
 {
+    /* 인덱스 키 타입에 따라 숫자 비교 또는 문자열 비교를 수행합니다. */
     if (data_type == DATA_TYPE_INT) {
         long left_value;
         long right_value;
@@ -121,6 +143,7 @@ static int parse_csv_line(const char *line,
     int text_index;
     int i;
 
+    /* CSV 한 줄을 컬럼 배열로 분해합니다. 인덱스 재구축과 검증에서 재사용합니다. */
     in_quotes = 0;
     row_index = 0;
     text_index = 0;
@@ -173,6 +196,7 @@ static int validate_header(FILE *file, const TableSchema *schema, ErrorInfo *err
     int value_count;
     int i;
 
+    /* 인덱스를 만들거나 재구축하기 전에 CSV 헤더가 현재 스키마와 맞는지 확인합니다. */
     if (fgets(line, sizeof(line), file) == NULL) {
         set_file_error(error, "CSV 헤더를 읽을 수 없습니다.");
         return 0;
@@ -200,6 +224,7 @@ static int validate_header(FILE *file, const TableSchema *schema, ErrorInfo *err
 
 static int read_header(FILE *file, IndexHeader *header, ErrorInfo *error)
 {
+    /* 인덱스 파일 헤더를 읽고 magic/version까지 검증합니다. */
     rewind(file);
 
     if (fread(header, sizeof(*header), 1, file) != 1) {
@@ -217,6 +242,7 @@ static int read_header(FILE *file, IndexHeader *header, ErrorInfo *error)
 
 static int write_header(FILE *file, const IndexHeader *header, ErrorInfo *error)
 {
+    /* 메모리의 IndexHeader를 파일 맨 앞에 다시 저장합니다. */
     rewind(file);
 
     if (fwrite(header, sizeof(*header), 1, file) != 1) {
@@ -230,6 +256,7 @@ static int write_header(FILE *file, const IndexHeader *header, ErrorInfo *error)
 
 static int read_node(FILE *file, int node_id, BTreeNode *node, ErrorInfo *error)
 {
+    /* 특정 node id 위치의 B+ 트리 노드를 파일에서 읽습니다. */
     if (fseek(file, node_offset(node_id), SEEK_SET) != 0) {
         set_file_error(error, "인덱스 노드 위치로 이동할 수 없습니다.");
         return 0;
@@ -245,6 +272,7 @@ static int read_node(FILE *file, int node_id, BTreeNode *node, ErrorInfo *error)
 
 static int write_node(FILE *file, int node_id, const BTreeNode *node, ErrorInfo *error)
 {
+    /* 특정 node id 위치에 B+ 트리 노드를 저장합니다. */
     if (fseek(file, node_offset(node_id), SEEK_SET) != 0) {
         set_file_error(error, "인덱스 노드 위치로 이동할 수 없습니다.");
         return 0;
@@ -263,6 +291,7 @@ static int allocate_node(FILE *file, IndexHeader *header, int *node_id, ErrorInf
 {
     BTreeNode node;
 
+    /* next_node_id를 사용해 새 빈 노드를 하나 할당하고 파일에 기록합니다. */
     memset(&node, 0, sizeof(node));
     node.next_leaf_id = -1;
 

@@ -3,6 +3,14 @@
 
 #include "sqlproc.h"
 
+/*
+ * parser.c는 TokenList를 SqlProgram(AST)으로 바꾸는 모듈입니다.
+ * 현재 지원 문장:
+ * - INSERT
+ * - SELECT
+ * - CREATE INDEX
+ */
+
 typedef struct {
     const TokenList *tokens;
     int position;
@@ -10,6 +18,7 @@ typedef struct {
 
 static void set_error(ErrorInfo *error, const Token *token, const char *message)
 {
+    /* 파서 오류는 현재 바라보는 토큰의 위치를 함께 기록합니다. */
     snprintf(error->message, sizeof(error->message), "%s", message);
     error->line = token->line;
     error->column = token->column;
@@ -17,16 +26,19 @@ static void set_error(ErrorInfo *error, const Token *token, const char *message)
 
 static const Token *current_token(ParserState *state)
 {
+    /* 현재 파싱 위치의 토큰을 돌려줍니다. */
     return &state->tokens->items[state->position];
 }
 
 static const Token *previous_token(ParserState *state)
 {
+    /* 직전에 소비한 토큰을 돌려줍니다. */
     return &state->tokens->items[state->position - 1];
 }
 
 static void advance_token(ParserState *state)
 {
+    /* EOF를 넘기지 않는 범위에서 다음 토큰으로 이동합니다. */
     if (state->position < state->tokens->count - 1) {
         state->position += 1;
     }
@@ -34,11 +46,16 @@ static void advance_token(ParserState *state)
 
 static int token_matches(ParserState *state, TokenType expected_type)
 {
+    /* 현재 토큰이 기대한 종류인지 단순 비교합니다. */
     return current_token(state)->type == expected_type;
 }
 
 static int consume_token(ParserState *state, TokenType expected_type, ErrorInfo *error, const char *message)
 {
+    /*
+     * 현재 토큰이 expected_type이면 소비하고,
+     * 아니면 주어진 메시지로 파서 오류를 만듭니다.
+     */
     if (!token_matches(state, expected_type)) {
         set_error(error, current_token(state), message);
         return 0;
@@ -53,6 +70,7 @@ static int copy_name(char dest[SQLPROC_MAX_NAME_LEN],
                      const Token *token,
                      ErrorInfo *error)
 {
+    /* 토큰 문자열을 AST 내부 name 필드로 복사하고 위치도 함께 저장합니다. */
     if ((int)strlen(token->text) >= SQLPROC_MAX_NAME_LEN) {
         set_error(error, token, "이름 길이가 너무 깁니다.");
         return 0;
@@ -73,6 +91,7 @@ static int parse_identifier(ParserState *state,
                             SourceLocation *location,
                             ErrorInfo *error)
 {
+    /* 현재 토큰이 식별자여야 하는 자리를 읽습니다. */
     if (!token_matches(state, TOKEN_IDENTIFIER)) {
         set_error(error, current_token(state), "식별자가 필요합니다.");
         return 0;
@@ -88,6 +107,7 @@ static int parse_identifier(ParserState *state,
 
 static int parse_literal(ParserState *state, LiteralValue *value, ErrorInfo *error)
 {
+    /* 숫자 또는 문자열 리터럴을 LiteralValue 구조체로 바꿉니다. */
     if (token_matches(state, TOKEN_NUMBER)) {
         value->type = LITERAL_INT;
         snprintf(value->text, sizeof(value->text), "%s", current_token(state)->text);
@@ -112,6 +132,7 @@ static int parse_literal(ParserState *state, LiteralValue *value, ErrorInfo *err
 
 static int parse_operator(ParserState *state, CompareOperator *operator_type, ErrorInfo *error)
 {
+    /* WHERE 절에서 지원하는 비교 연산자 하나를 읽습니다. */
     if (token_matches(state, TOKEN_EQUAL)) {
         *operator_type = COMPARE_EQUAL;
         advance_token(state);
@@ -148,6 +169,7 @@ static int parse_operator(ParserState *state, CompareOperator *operator_type, Er
 
 static int parse_predicate(ParserState *state, Predicate *predicate, ErrorInfo *error)
 {
+    /* WHERE 조건 1개를 "컬럼 연산자 리터럴" 형태로 읽습니다. */
     if (!parse_identifier(state, predicate->column_name, &predicate->column_location, error)) {
         return 0;
     }
@@ -220,6 +242,11 @@ static int parse_value_list(ParserState *state,
 {
     int parsed_count;
 
+    /*
+     * VALUES (...) 내부의 리터럴 목록을 읽습니다.
+     * expected_count >= 0 이면 개수가 정확히 일치해야 하고,
+     * expected_count < 0 이면 개수 제한만 확인합니다.
+     */
     parsed_count = 0;
 
     while (1) {
@@ -259,6 +286,11 @@ static int parse_insert_statement(ParserState *state, Statement *statement, Erro
 {
     InsertStatement *insert_statement;
 
+    /*
+     * 지원 예:
+     * - INSERT INTO users (id, name) VALUES (1, 'kim')
+     * - INSERT INTO users VALUES (1, 'kim', 20)
+     */
     insert_statement = &statement->insert_statement;
     memset(insert_statement, 0, sizeof(*insert_statement));
     statement->type = STATEMENT_INSERT;
@@ -341,6 +373,7 @@ static int parse_select_statement(ParserState *state, Statement *statement, Erro
 {
     SelectStatement *select_statement;
 
+    /* SELECT * 또는 SELECT col1, col2 형태를 읽고 뒤에 FROM/WHERE를 연결합니다. */
     select_statement = &statement->select_statement;
     memset(select_statement, 0, sizeof(*select_statement));
     statement->type = STATEMENT_SELECT;
@@ -398,6 +431,7 @@ static int parse_create_index_statement(ParserState *state, Statement *statement
 {
     CreateIndexStatement *create_index_statement;
 
+    /* CREATE INDEX idx_name ON table_name(column_name) 형태를 읽습니다. */
     create_index_statement = &statement->create_index_statement;
     memset(create_index_statement, 0, sizeof(*create_index_statement));
     statement->type = STATEMENT_CREATE_INDEX;
@@ -450,6 +484,7 @@ static int parse_create_index_statement(ParserState *state, Statement *statement
 
 static int parse_statement(ParserState *state, Statement *statement, ErrorInfo *error)
 {
+    /* 현재 토큰의 시작 키워드를 보고 어떤 문장 파서를 호출할지 결정합니다. */
     if (token_matches(state, TOKEN_KEYWORD_INSERT)) {
         return parse_insert_statement(state, statement, error);
     }
@@ -470,6 +505,10 @@ int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error
 {
     ParserState state;
 
+    /*
+     * 토큰 배열 전체를 끝까지 읽어 여러 SQL 문장을 SqlProgram에 담습니다.
+     * 각 문장은 세미콜론으로 끝나야 합니다.
+     */
     memset(program, 0, sizeof(*program));
     memset(error, 0, sizeof(*error));
 
@@ -506,6 +545,7 @@ int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error
 
 const char *statement_type_name(StatementType type)
 {
+    /* 디버깅/오류 메시지용 문장 종류 문자열입니다. */
     if (type == STATEMENT_INSERT) {
         return "INSERT";
     }
@@ -523,6 +563,7 @@ const char *statement_type_name(StatementType type)
 
 const char *compare_operator_name(CompareOperator operator_type)
 {
+    /* 내부 enum을 사람이 읽기 쉬운 연산자 문자열로 바꿉니다. */
     if (operator_type == COMPARE_EQUAL) {
         return "=";
     }
