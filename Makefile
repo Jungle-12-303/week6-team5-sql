@@ -4,6 +4,7 @@ BUILD_DIR = build
 SRC_DIR = src
 TEST_DIR = tests
 HEADERS = $(wildcard include/*.h)
+.DEFAULT_GOAL := all
 
 # 앱 바이너리는 src 아래의 모든 .c 파일을 함께 빌드합니다.
 APP_SRCS = $(wildcard $(SRC_DIR)/*.c)
