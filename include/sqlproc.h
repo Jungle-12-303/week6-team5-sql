@@ -100,6 +100,17 @@ typedef struct {
 } LiteralValue;
 
 typedef struct {
+    char name[SQLPROC_MAX_NAME_LEN];
+    DataType type;
+} ColumnSchema;
+
+typedef struct {
+    char table_name[SQLPROC_MAX_NAME_LEN];
+    int column_count;
+    ColumnSchema columns[SQLPROC_MAX_COLUMNS];
+} TableSchema;
+
+typedef struct {
     char column_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation column_location;
     CompareOperator operator_type;
@@ -159,6 +170,11 @@ int run_program(const AppConfig *config);
 int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo *error);
 int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error);
 int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error);
+int load_table_schema(const char *schema_dir,
+                      const char *table_name,
+                      TableSchema *schema,
+                      ErrorInfo *error);
+int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error);
 
 const char *statement_type_name(StatementType type);
 const char *compare_operator_name(CompareOperator operator_type);
