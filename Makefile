@@ -16,22 +16,21 @@ TEST_APP = $(BUILD_DIR)/test_runner
 
 .PHONY: all test clean
 
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
 all: $(APP)
 
-$(APP): $(APP_OBJS)
-	mkdir -p $(BUILD_DIR)
+$(APP): $(APP_OBJS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $(APP_OBJS)
 
-$(TEST_APP): $(CORE_OBJS) $(TEST_OBJS)
-	mkdir -p $(BUILD_DIR)
+$(TEST_APP): $(CORE_OBJS) $(TEST_OBJS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $(CORE_OBJS) $(TEST_OBJS)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/test_runner.o: $(TEST_DIR)/test_runner.c
-	mkdir -p $(BUILD_DIR)
+$(BUILD_DIR)/test_runner.o: $(TEST_DIR)/test_runner.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test: $(TEST_APP)
