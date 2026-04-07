@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sqlproc.h"
@@ -35,9 +36,89 @@ int parse_arguments(int argc, char **argv, AppConfig *config)
     return 1;
 }
 
+int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo *error)
+{
+    FILE *file;
+    size_t read_size;
+    size_t total_size;
+
+    memset(error, 0, sizeof(*error));
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        snprintf(error->message, sizeof(error->message), "SQL 파일을 열 수 없습니다.");
+        return 0;
+    }
+
+    total_size = fread(buffer, 1, buffer_size - 1, file);
+    if (ferror(file)) {
+        fclose(file);
+        snprintf(error->message, sizeof(error->message), "SQL 파일을 읽는 중 오류가 발생했습니다.");
+        return 0;
+    }
+
+    read_size = fread(buffer, 1, 1, file);
+    if (read_size > 0) {
+        fclose(file);
+        snprintf(error->message, sizeof(error->message), "SQL 파일이 너무 큽니다.");
+        return 0;
+    }
+
+    fclose(file);
+    buffer[total_size] = '\0';
+    return 1;
+}
+
+void print_error(const ErrorInfo *error)
+{
+    if (error->message[0] == '\0') {
+        return;
+    }
+
+    if (error->line > 0) {
+        fprintf(stderr, "오류: %s (line %d, column %d)\n",
+                error->message,
+                error->line,
+                error->column);
+        return;
+    }
+
+    fprintf(stderr, "오류: %s\n", error->message);
+}
+
+static void print_program_summary(const SqlProgram *program)
+{
+    int i;
+
+    printf("Parsed %d statement(s).\n", program->count);
+
+    for (i = 0; i < program->count; i++) {
+        printf("%d. %s\n", i + 1, statement_type_name(program->items[i].type));
+    }
+}
+
 int run_program(const AppConfig *config)
 {
-    (void)config;
-    fprintf(stderr, "기능 구현 전 스캐폴딩 단계입니다.\n");
-    return 1;
+    char sql_text[SQLPROC_MAX_SQL_SIZE];
+    TokenList tokens;
+    SqlProgram program;
+    ErrorInfo error;
+
+    if (!load_sql_file(config->input_path, sql_text, sizeof(sql_text), &error)) {
+        print_error(&error);
+        return 1;
+    }
+
+    if (!tokenize_sql(sql_text, &tokens, &error)) {
+        print_error(&error);
+        return 1;
+    }
+
+    if (!parse_program(&tokens, &program, &error)) {
+        print_error(&error);
+        return 1;
+    }
+
+    print_program_summary(&program);
+    return 0;
 }
