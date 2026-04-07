@@ -86,17 +86,6 @@ void print_error(const ErrorInfo *error)
     fprintf(stderr, "오류: %s\n", error->message);
 }
 
-static void print_program_summary(const SqlProgram *program)
-{
-    int i;
-
-    printf("Parsed %d statement(s).\n", program->count);
-
-    for (i = 0; i < program->count; i++) {
-        printf("%d. %s\n", i + 1, statement_type_name(program->items[i].type));
-    }
-}
-
 int run_program(const AppConfig *config)
 {
     char sql_text[SQLPROC_MAX_SQL_SIZE];
@@ -119,6 +108,10 @@ int run_program(const AppConfig *config)
         return 1;
     }
 
-    print_program_summary(&program);
+    if (!execute_program(config, &program, &error)) {
+        print_error(&error);
+        return 1;
+    }
+
     return 0;
 }

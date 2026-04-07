@@ -1,8 +1,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "sqlproc.h"
+
+static int ensure_directory(const char *path);
+static int write_text_file(const char *path, const char *text);
+static int file_contains_text(const char *path, const char *needle);
+static int file_equals_text(const char *path, const char *expected_text);
+static int capture_run_program(const AppConfig *config, const char *output_path);
+static int create_temp_workspace(char *base_path,
+                                 size_t base_size,
+                                 char *schema_dir,
+                                 size_t schema_size,
+                                 char *data_dir,
+                                 size_t data_size,
+                                 char *index_dir,
+                                 size_t index_size,
+                                 const char *prefix);
 
 static int test_parse_arguments_success(void)
 {
@@ -206,29 +224,177 @@ static int test_parse_where_limit_fail(void)
 
 static int test_run_program_success(void)
 {
-    const char *path;
-    FILE *file;
     AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char index_dir[256];
+    char path[256];
+    char output_path[256];
 
-    path = "/tmp/sqlproc_parser_success.sql";
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               index_dir,
+                               sizeof(index_dir),
+                               "sqlproc_run_program_success_")) {
+        return 0;
+    }
+
+    snprintf(path, sizeof(path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+
+    {
+        char schema_path[256];
+        char data_path[256];
+
+        snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+        snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+        if (!write_text_file(schema_path, "id:int,name:string\n")) {
+            return 0;
+        }
+
+        if (!write_text_file(data_path, "id,name\n1,kim\n")) {
+            return 0;
+        }
+    }
+
+    if (!write_text_file(path, "SELECT * FROM users;")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.index_dir, sizeof(config.index_dir), "%s", index_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", path);
+
+    if (!capture_run_program(&config, output_path)) {
+        return 0;
+    }
+
+    if (!file_contains_text(output_path, "id\tname\n1\tkim\n")) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int ensure_directory(const char *path)
+{
+    if (mkdir(path, 0777) == 0) {
+        return 1;
+    }
+
+    return access(path, F_OK) == 0;
+}
+
+static int write_text_file(const char *path, const char *text)
+{
+    FILE *file;
+
     file = fopen(path, "wb");
     if (file == NULL) {
         return 0;
     }
 
-    fputs("SELECT * FROM users;", file);
+    fputs(text, file);
     fclose(file);
+    return 1;
+}
 
-    memset(&config, 0, sizeof(config));
-    snprintf(config.input_path, sizeof(config.input_path), "%s", path);
+static int file_contains_text(const char *path, const char *needle)
+{
+    char buffer[2048];
+    FILE *file;
+    size_t size;
 
-    if (run_program(&config) != 0) {
-        remove(path);
+    file = fopen(path, "rb");
+    if (file == NULL) {
         return 0;
     }
 
-    remove(path);
-    return 1;
+    size = fread(buffer, 1, sizeof(buffer) - 1, file);
+    fclose(file);
+    buffer[size] = '\0';
+    return strstr(buffer, needle) != NULL;
+}
+
+static int file_equals_text(const char *path, const char *expected_text)
+{
+    char buffer[2048];
+    FILE *file;
+    size_t size;
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        return 0;
+    }
+
+    size = fread(buffer, 1, sizeof(buffer) - 1, file);
+    fclose(file);
+    buffer[size] = '\0';
+    return strcmp(buffer, expected_text) == 0;
+}
+
+static int capture_run_program(const AppConfig *config, const char *output_path)
+{
+    FILE *file;
+    int saved_stdout;
+    int result;
+
+    file = fopen(output_path, "wb");
+    if (file == NULL) {
+        return 0;
+    }
+
+    fflush(stdout);
+    saved_stdout = dup(STDOUT_FILENO);
+    if (saved_stdout < 0) {
+        fclose(file);
+        return 0;
+    }
+
+    if (dup2(fileno(file), STDOUT_FILENO) < 0) {
+        close(saved_stdout);
+        fclose(file);
+        return 0;
+    }
+
+    result = run_program(config);
+    fflush(stdout);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+    fclose(file);
+    return result == 0;
+}
+
+static int create_temp_workspace(char *base_path,
+                                 size_t base_size,
+                                 char *schema_dir,
+                                 size_t schema_size,
+                                 char *data_dir,
+                                 size_t data_size,
+                                 char *index_dir,
+                                 size_t index_size,
+                                 const char *prefix)
+{
+    snprintf(base_path, base_size, "/tmp/%sXXXXXX", prefix);
+    if (mkdtemp(base_path) == NULL) {
+        return 0;
+    }
+
+    snprintf(schema_dir, schema_size, "%s/schemas", base_path);
+    snprintf(data_dir, data_size, "%s/data", base_path);
+    snprintf(index_dir, index_size, "%s/indexes", base_path);
+
+    return ensure_directory(schema_dir) &&
+           ensure_directory(data_dir) &&
+           ensure_directory(index_dir);
 }
 
 static int test_parse_empty_sql_fail(void)
@@ -246,6 +412,84 @@ static int test_parse_empty_sql_fail(void)
     }
 
     return strstr(error.message, "비어") != NULL;
+}
+
+static int test_insert_and_select_where_execution(void)
+{
+    AppConfig insert_config;
+    AppConfig select_config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char index_dir[256];
+    char insert_sql_path[256];
+    char select_sql_path[256];
+    char output_path[256];
+    char schema_path[256];
+    char data_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               index_dir,
+                               sizeof(index_dir),
+                               "sqlproc_where_executor_test_")) {
+        return 0;
+    }
+
+    snprintf(insert_sql_path, sizeof(insert_sql_path), "%s/insert.sql", base_dir);
+    snprintf(select_sql_path, sizeof(select_sql_path), "%s/select.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/select.out", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(insert_sql_path,
+                         "INSERT INTO users (id, name, age) VALUES (1, 'kim', 20);"
+                         "INSERT INTO users (id, name, age) VALUES (2, 'lee', 30);\n")) {
+        return 0;
+    }
+
+    memset(&insert_config, 0, sizeof(insert_config));
+    snprintf(insert_config.schema_dir, sizeof(insert_config.schema_dir), "%s", schema_dir);
+    snprintf(insert_config.data_dir, sizeof(insert_config.data_dir), "%s", data_dir);
+    snprintf(insert_config.index_dir, sizeof(insert_config.index_dir), "%s", index_dir);
+    snprintf(insert_config.input_path, sizeof(insert_config.input_path), "%s", insert_sql_path);
+
+    if (run_program(&insert_config) != 0) {
+        return 0;
+    }
+
+    if (!file_equals_text(data_path, "id,name,age\n1,kim,20\n2,lee,30\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(select_sql_path,
+                         "SELECT name, age FROM users WHERE age >= 25 AND id >= 2;\n")) {
+        return 0;
+    }
+
+    memset(&select_config, 0, sizeof(select_config));
+    snprintf(select_config.schema_dir, sizeof(select_config.schema_dir), "%s", schema_dir);
+    snprintf(select_config.data_dir, sizeof(select_config.data_dir), "%s", data_dir);
+    snprintf(select_config.index_dir, sizeof(select_config.index_dir), "%s", index_dir);
+    snprintf(select_config.input_path, sizeof(select_config.input_path), "%s", select_sql_path);
+
+    if (!capture_run_program(&select_config, output_path)) {
+        return 0;
+    }
+
+    if (!file_equals_text(output_path, "name\tage\nlee\t30\n")) {
+        return 0;
+    }
+
+    return 1;
 }
 
 int main(void)
@@ -290,6 +534,11 @@ int main(void)
         return 1;
     }
 
-    printf("All parser tests passed.\n");
+    if (!test_insert_and_select_where_execution()) {
+        fprintf(stderr, "test_insert_and_select_where_execution failed\n");
+        return 1;
+    }
+
+    printf("All executor tests passed.\n");
     return 0;
 }
