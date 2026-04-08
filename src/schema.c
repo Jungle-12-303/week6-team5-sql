@@ -7,7 +7,7 @@
 /*
  * schema.c는 <table>.schema 파일을 읽어 TableSchema 구조체로 바꾸는 모듈입니다.
  * 현재 형식 예:
- *   id:int:pk,name:string,age:int
+ *   id:int,name:string,age:int
  */
 
 static void set_error(ErrorInfo *error, const char *message)
@@ -22,7 +22,7 @@ static void to_lowercase_copy(char *dest, size_t dest_size, const char *src)
 {
     size_t i;
 
-    /* 컬럼 이름, 타입, 제약 조건을 대소문자 영향 없이 다루기 위한 소문자 복사입니다. */
+    /* 컬럼 이름, 타입을 대소문자 영향 없이 다루기 위한 소문자 복사입니다. */
     for (i = 0; i + 1 < dest_size && src[i] != '\0'; i++) {
         dest[i] = (char)tolower((unsigned char)src[i]);
     }
@@ -58,16 +58,14 @@ int load_table_schema(const char *schema_dir,
     FILE *file;
 
     /*
-     * 실행기/인덱스 모듈이 사용할 TableSchema를 채웁니다.
+     * 실행기 모듈이 사용할 TableSchema를 채웁니다.
      * - table_name
      * - 컬럼 개수와 순서
      * - 각 컬럼 타입
-     * - PRIMARY KEY 컬럼 인덱스
      */
     memset(schema, 0, sizeof(*schema));
     memset(error, 0, sizeof(*error));
     snprintf(schema->table_name, sizeof(schema->table_name), "%s", table_name);
-    schema->primary_key_column_index = -1;
     snprintf(path, sizeof(path), "%s/%s.schema", schema_dir, table_name);
 
     /* 테이블 이름에 대응하는 스키마 파일 1개를 읽습니다. */
@@ -90,14 +88,12 @@ int load_table_schema(const char *schema_dir,
 
     /*
      * 한 줄 스키마를 쉼표와 콜론 기준으로 제자리에서 잘라 가며 읽습니다.
-     * 예: id:int:pk,name:string -> [id:int:pk] [name:string]
+     * 예: id:int,name:string -> [id:int] [name:string]
      */
     while (*cursor != '\0') {
         char *colon;
-        char *modifier;
         char lower_name[SQLPROC_MAX_NAME_LEN];
         char lower_type[SQLPROC_MAX_NAME_LEN];
-        char lower_modifier[SQLPROC_MAX_NAME_LEN];
 
         if (schema->column_count >= SQLPROC_MAX_COLUMNS) {
             set_error(error, "스키마 컬럼 수가 최대 개수를 넘었습니다.");
@@ -121,15 +117,6 @@ int load_table_schema(const char *schema_dir,
         }
 
         *colon = '\0';
-        modifier = strchr(colon + 1, ':');
-        if (modifier != NULL) {
-            /* 세 번째 항목이 있으면 현재는 pk 제약만 지원합니다. */
-            *modifier = '\0';
-            modifier += 1;
-            to_lowercase_copy(lower_modifier, sizeof(lower_modifier), modifier);
-        } else {
-            lower_modifier[0] = '\0';
-        }
 
         to_lowercase_copy(lower_name, sizeof(lower_name), entry);
         to_lowercase_copy(lower_type, sizeof(lower_type), colon + 1);
@@ -137,22 +124,6 @@ int load_table_schema(const char *schema_dir,
         if (!parse_data_type(lower_type, &schema->columns[schema->column_count].type)) {
             set_error(error, "지원하지 않는 스키마 타입입니다.");
             return 0;
-        }
-
-        if (lower_modifier[0] != '\0') {
-            /* PRIMARY KEY는 현재 단일 컬럼만 허용합니다. */
-            if (strcmp(lower_modifier, "pk") != 0) {
-                set_error(error, "지원하지 않는 스키마 제약 조건입니다.");
-                return 0;
-            }
-
-            if (schema->primary_key_column_index >= 0) {
-                set_error(error, "PRIMARY KEY는 하나만 지정할 수 있습니다.");
-                return 0;
-            }
-
-            schema->columns[schema->column_count].is_primary_key = 1;
-            schema->primary_key_column_index = schema->column_count;
         }
 
         snprintf(schema->columns[schema->column_count].name,
