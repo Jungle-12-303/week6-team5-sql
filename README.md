@@ -45,6 +45,7 @@ src/
   tokenizer.c
   parser.c
   schema.c
+  storage.c
   executor.c
 tests/
   test_runner.c
@@ -110,14 +111,16 @@ id,name,age
 1. SQL 파일에서 문장을 읽습니다.
 2. 토큰으로 나눕니다.
 3. 수동 파서로 SQL 문장 구조체를 만듭니다.
-4. 실행기가 문장 종류에 따라 CSV 파일 입출력을 수행합니다.
+4. 실행기가 문장 종류를 해석하고 스토리지 계층에 CSV 입출력을 맡깁니다.
 
 ## 초심자에게 중요한 코드 읽기 포인트
 
 - [src/parser.c](src/parser.c)
   `INSERT`, `SELECT`를 수동 파싱합니다.
+- [src/storage.c](src/storage.c)
+  CSV 경로, 헤더, 행 저장/출력을 담당합니다.
 - [src/executor.c](src/executor.c)
-  CSV 저장과 읽기를 담당합니다.
+  문장 구조체를 해석해 스토리지 호출로 연결합니다.
 - [tests/test_runner.c](tests/test_runner.c)
   기능별 테스트 흐름을 한 파일에서 따라갈 수 있습니다.
 
