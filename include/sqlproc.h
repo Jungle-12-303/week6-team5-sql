@@ -254,7 +254,7 @@ int create_index_from_statement(const AppConfig *config,
  * @param schema         테이블 스키마 포인터
  * @param row_values     삽입된 행의 컬럼별 값 배열
  * @param row_offset     CSV 파일 내 행의 바이트 오프셋
- * @param changed_index  업데이트된 인덱스 수를 저장할 포인터
+ * @param changed_index  업데이트된 인덱스 수를 저장할 포인터 ("하나라도 변경됐는지"를 나타내는 값)
  * @param error          오류 정보 저장 포인터
  * @return               성공 시 1, 실패 시 0
  */
@@ -276,16 +276,21 @@ int rebuild_indexes_for_table(const AppConfig *config,
                               const TableSchema *schema,
                               ErrorInfo *error);
 
-/* SELECT 문의 WHERE 절에 맞는 인덱스를 찾아 해당 행 오프셋 목록을 반환한다.
+/* SELECT 문의 WHERE 절에 사용할 인덱스를 탐색해 조건에 맞는 row 오프셋 후보를 수집한다.
  *
+ * 인덱스를 찾지 못해도 오류로 처리하지 않고 성공으로 반환하며, 이 경우 *used_index는 0으로 설정된다.
+ * 
+ * 또한 인덱스 결과 수가 너무 많으면 인덱스 사용을 포기하고, full scan으로 되돌릴 수 있도록 *used_index를 0으로 돌려준다. (full scan fallback)
+ *  
+ * 
  * @param config        실행 설정 구조체 포인터
  * @param schema        테이블 스키마 포인터
  * @param statement     SELECT AST 포인터
- * @param offsets       결과 오프셋 배열
- * @param offset_count  결과 오프셋 개수를 저장할 포인터
- * @param used_index    인덱스 사용 여부를 저장할 포인터
+ * @param offsets       인덱스 후보 row 오프셋을 저장할 배열
+ * @param offset_count  저장된 오프셋 개수를 돌려줄 포인터
+ * @param used_index    실제로 인덱스를 사용했는지 저장할 포인터
  * @param error         오류 정보 저장 포인터
- * @return              성공 시 1, 실패 시 0
+ * @return              오류 없이 처리되면 1, 실제 오류가 나면 0
  */
 int try_collect_offsets_from_indexes(const AppConfig *config,
                                      const TableSchema *schema,

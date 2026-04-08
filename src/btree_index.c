@@ -1217,7 +1217,7 @@ int rebuild_indexes_for_table(const AppConfig *config,
 
 /* WHERE 절에 사용할 인덱스를 탐색하여 조건에 맞는 row 오프셋 목록을 반환한다.
  * 등호(=) 인덱스를 범위 인덱스보다 우선 선택하며, 선택된 인덱스 하나만 사용한다.
- * WHERE 절이 없거나 인덱스가 없으면 used_index를 0으로 설정하고 성공을 반환한다.
+ * WHERE 절이 없거나 인덱스가 없으면 used_index를 0으로 설정하고 성공을 반환한다. 
  *
  * @param config        실행 설정 구조체 포인터
  * @param schema        테이블 스키마 포인터
@@ -1300,7 +1300,9 @@ int try_collect_offsets_from_indexes(const AppConfig *config,
             set_file_error(error, "인덱스와 현재 스키마가 맞지 않습니다.");
             return 0;
         }
-
+        
+        // 인덱스 결과 수가 너무 많으면 인덱스 사용을 포기하고, 
+        // full scan으로 되돌릴 수 있도록 *used_index를 0으로 돌려준다. (full scan fallback)
         if (!collect_offsets_from_index(file, &header,
                                         &statement->where_clause.items[chosen_predicate],
                                         offsets, offset_count, error)) {
