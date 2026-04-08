@@ -140,7 +140,7 @@ static int run_sql_text(const AppConfig *config, const char *sql_text, ErrorInfo
      *
      * 흐름:
      * 1. SQL 문자열 -> TokenList
-     * 2. TokenList -> SqlProgram(AST)
+     * 2. TokenList -> SqlProgram
      * 3. SqlProgram -> execute_program
      */
     if (!tokenize_sql(sql_text, &tokens, error)) {

@@ -4,7 +4,7 @@
 #include "sqlproc.h"
 
 /*
- * parser.c는 TokenList를 SqlProgram(AST)으로 바꾸는 모듈입니다.
+ * parser.c는 TokenList를 SqlProgram으로 바꾸는 모듈입니다.
  * 현재 지원 문장:
  * - INSERT
  * - SELECT
@@ -69,7 +69,7 @@ static int copy_name(char dest[SQLPROC_MAX_NAME_LEN],
                      const Token *token,
                      ErrorInfo *error)
 {
-    /* 토큰 문자열을 AST 내부 name 필드로 복사하고 위치도 함께 저장합니다. */
+    /* 토큰 문자열을 구조체 내부 name 필드로 복사하고 위치도 함께 저장합니다. */
     if ((int)strlen(token->text) >= SQLPROC_MAX_NAME_LEN) {
         set_error(error, token, "이름 길이가 너무 깁니다.");
         return 0;

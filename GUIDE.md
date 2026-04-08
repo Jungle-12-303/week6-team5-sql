@@ -58,7 +58,7 @@ week6-team5-sql/
 │   ├── main.c          ← 프로그램 시작점 (진입점)
 │   ├── app.c           ← 명령줄 인자 파싱, SQL 파일 실행
 │   ├── tokenizer.c     ← SQL 문자열 → 토큰 조각
-│   ├── parser.c        ← 토큰 → 구문 트리(AST)
+│   ├── parser.c        ← 토큰 → SQL 문장 구조체
 │   ├── schema.c        ← 테이블 스키마 파일 읽기
 │   └── executor.c      ← SQL 문장 실제 실행 (CSV 읽기/쓰기)
 ├── tests/
@@ -89,8 +89,8 @@ tokenizer.c  parser.c  executor.c ...  (실제 구현체)
 flowchart TD
     A(["input.sql 파일"]) --> B["app.c\nSQL 파일 읽기"]
     B --> C["tokenizer.c\n문자열 → 토큰 배열"]
-    C --> D["parser.c\n토큰 → AST"]
-    D --> E["executor.c\nAST 실행"]
+    C --> D["parser.c\n토큰 → SQL 문장 구조체"]
+    D --> E["executor.c\nSQL 문장 실행"]
     E --> F["schema.c\n스키마 파일 읽기"]
     E --> G[("CSV 파일\n데이터 저장/읽기")]
 
@@ -158,7 +158,7 @@ graph LR
 | `main.c` | `main()` | 인자 파싱 후 `run_program()` 호출 |
 | `app.c` | `parse_arguments()`, `run_program()` | 인자 검증, SQL 파일 읽기, 파이프라인 실행 |
 | `tokenizer.c` | `tokenize_sql()` | 문자열을 `TokenList`로 변환 |
-| `parser.c` | `parse_program()` | `TokenList`를 `SqlProgram`(AST)으로 변환 |
+| `parser.c` | `parse_program()` | `TokenList`를 `SqlProgram`으로 변환 |
 | `schema.c` | `load_table_schema()` | `.schema` 파일 읽어 `TableSchema` 반환 |
 | `executor.c` | `execute_program()` | INSERT/SELECT 실행, CSV 읽기·쓰기 |
 
@@ -321,7 +321,7 @@ static TokenType keyword_type(const char *text)
 
 ### 6-2. 파싱 (parser.c)
 
-토큰 배열을 받아 AST(Abstract Syntax Tree, 구문 트리)를 만듭니다.  
+토큰 배열을 받아 SQL 문장 구조체(`SqlProgram`)를 만듭니다.  
 **재귀 하강 파서(Recursive Descent Parser)** 패턴을 사용합니다.
 
 > **재귀 하강 파서란?**  
@@ -381,14 +381,14 @@ flowchart TD
 
 ### 6-3. 실행 (executor.c)
 
-AST를 받아 실제 파일 I/O를 수행합니다.
+SQL 문장 구조체를 받아 실제 파일 I/O를 수행합니다.
 
 **INSERT 실행 흐름:**
 
 ```mermaid
 flowchart TD
     A[execute_insert] --> B["load_table_schema()\n스키마 파일 읽기"]
-    B --> C["build_insert_row_values()\nAST 값을 스키마 순서로 정렬"]
+    B --> C["build_insert_row_values()\n구조체 값을 스키마 순서로 정렬"]
     C --> D["ensure_data_file()\nCSV 없으면 헤더 생성, 있으면 헤더 검증"]
     D --> E["fopen(path, 'ab')\n추가 모드로 열기"]
     E --> F["write_csv_row()\nCSV 끝에 행 추가"]

@@ -6,7 +6,7 @@
 #include "sqlproc.h"
 
 /*
- * executor.c는 파서가 만든 AST를 실제 파일 입출력 동작으로 수행하는 모듈입니다.
+ * executor.c는 파서가 만든 SQL 문장 구조체를 실제 파일 입출력 동작으로 수행하는 모듈입니다.
  * - INSERT: CSV 파일에 행을 추가
  * - SELECT: CSV를 읽어 결과 출력
  */
@@ -285,7 +285,7 @@ static int build_insert_row_values(const TableSchema *schema,
     int i;
 
     /*
-     * INSERT AST를 실제 "스키마 순서의 한 행 데이터"로 정렬합니다.
+     * INSERT 구조체를 실제 "스키마 순서의 한 행 데이터"로 정렬합니다.
      * - 컬럼 목록 생략 시: 스키마 순서 그대로 값 매핑
      * - 컬럼 목록 명시 시: 이름을 찾아 해당 스키마 위치로 값 배치
      */
@@ -364,7 +364,7 @@ static int execute_insert(const AppConfig *config,
     /*
      * INSERT 실행 흐름:
      * 1. 스키마 로드
-     * 2. AST 값을 스키마 순서 행 데이터로 정리
+     * 2. 구조체 값을 스키마 순서 행 데이터로 정리
      * 3. CSV 헤더 준비
      * 4. CSV append
      */
