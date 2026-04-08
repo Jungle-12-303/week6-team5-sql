@@ -6,7 +6,7 @@
 /*
  * 이 헤더는 프로젝트 전체에서 공유하는 "공용 계약"입니다.
  * - 최대 길이 상수
- * - 토큰 / AST / 스키마 / 실행 설정 구조체
+ * - 토큰 / SQL 문장 구조체 / 스키마 / 실행 설정
  * - 모듈 간에 호출하는 함수 선언
  *
  * 각 .c 파일은 이 헤더를 통해 같은 데이터 구조를 공유합니다.
@@ -114,7 +114,7 @@ typedef struct {
     ColumnSchema columns[SQLPROC_MAX_COLUMNS];
 } TableSchema;
 
-/* INSERT 문 AST입니다. */
+/* INSERT 문 구조체입니다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation table_location;
@@ -126,7 +126,7 @@ typedef struct {
     LiteralValue values[SQLPROC_MAX_COLUMNS];
 } InsertStatement;
 
-/* SELECT 문 AST입니다. */
+/* SELECT 문 구조체입니다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation table_location;
@@ -136,7 +136,7 @@ typedef struct {
     SourceLocation column_locations[SQLPROC_MAX_COLUMNS];
 } SelectStatement;
 
-/* 최상위 SQL 문장 1개입니다. */
+/* SQL 문장 1개입니다. INSERT 또는 SELECT 중 하나를 담습니다. */
 typedef struct {
     StatementType type;
     SourceLocation location;
@@ -144,31 +144,35 @@ typedef struct {
     SelectStatement select_statement;
 } Statement;
 
-/* SQL 파일 또는 입력 버퍼에서 읽은 문장들의 목록입니다. */
+/* SQL 파일에서 읽은 문장 목록입니다. */
 typedef struct {
     Statement items[SQLPROC_MAX_STATEMENTS];
     int count;
 } SqlProgram;
 
-/* app.c */
+/* app.c — 인자 파싱, SQL 파일 읽기, 실행 진입 */
 int parse_arguments(int argc, char **argv, AppConfig *config);
-int run_program(const AppConfig *config);
-
-/* app.c / tokenizer.c / parser.c / schema.c */
 int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo *error);
+int run_program(const AppConfig *config);
+void print_error(const ErrorInfo *error);
+
+/* tokenizer.c — SQL 문자열을 토큰 배열로 변환 */
 int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error);
+
+/* parser.c — 토큰 배열을 SQL 문장 구조체로 변환 */
 int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error);
+
+/* schema.c — 스키마 파일 로딩 */
 int load_table_schema(const char *schema_dir,
                       const char *table_name,
                       TableSchema *schema,
                       ErrorInfo *error);
 
-/* executor.c */
+/* executor.c — CSV 파일 읽기/쓰기 실행 */
 int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error);
 
 /* 디버깅/오류 메시지용 문자열 변환 함수입니다. */
 const char *statement_type_name(StatementType type);
 const char *token_type_name(TokenType type);
-void print_error(const ErrorInfo *error);
 
 #endif
