@@ -3,22 +3,31 @@
 
 #include <stddef.h>
 
+/* 이름, 문자열 값, 컬럼 수 같은 기본 크기 제한값들이다. */
 #define SQLPROC_MAX_NAME_LEN 64
 #define SQLPROC_MAX_VALUE_LEN 64
 #define SQLPROC_MAX_COLUMNS 16
 #define SQLPROC_MAX_PREDICATES 2
+
+/* 토큰화와 파싱 단계에서 사용할 최대 개수 제한값들이다. */
 #define SQLPROC_MAX_TOKENS 512
 #define SQLPROC_MAX_STATEMENTS 32
+
+/* 오류 메시지, SQL 입력, 인덱스 후보 수의 최대 크기 제한값들이다. */
 #define SQLPROC_MAX_ERROR_LEN 256
 #define SQLPROC_MAX_SQL_SIZE 8192
-#define SQLPROC_BTREE_MAX_KEYS 4
 #define SQLPROC_MAX_INDEX_RESULTS 2048
 
+/* 초심자가 split 흐름을 따라가기 쉽도록 작게 둔 B+ 트리 최대 키 수이다. */
+#define SQLPROC_BTREE_MAX_KEYS 4
+
+/* 스키마 컬럼 타입을 표현하는 열거형이다. */
 typedef enum {
     DATA_TYPE_INT,
     DATA_TYPE_STRING
 } DataType;
 
+/* 토크나이저가 만들어 내는 토큰 종류를 표현하는 열거형이다. */
 typedef enum {
     TOKEN_EOF,
     TOKEN_IDENTIFIER,
@@ -46,17 +55,20 @@ typedef enum {
     TOKEN_KEYWORD_ON
 } TokenType;
 
+/* SQL 문장 종류를 구분하는 열거형이다. */
 typedef enum {
     STATEMENT_INSERT,
     STATEMENT_SELECT,
     STATEMENT_CREATE_INDEX
 } StatementType;
 
+/* 리터럴 값이 정수인지 문자열인지 구분하는 열거형이다. */
 typedef enum {
     LITERAL_INT,
     LITERAL_STRING
 } LiteralType;
 
+/* WHERE 절에서 사용하는 비교 연산자 종류를 표현하는 열거형이다. */
 typedef enum {
     COMPARE_EQUAL,
     COMPARE_LESS,
@@ -65,11 +77,13 @@ typedef enum {
     COMPARE_GREATER_EQUAL
 } CompareOperator;
 
+/* SQL 원문 안의 줄 번호와 열 번호를 저장한다. */
 typedef struct {
     int line;
     int column;
 } SourceLocation;
 
+/* 프로그램 실행에 필요한 디렉토리 경로와 입력 방식 정보를 저장한다. */
 typedef struct {
     char schema_dir[256];
     char data_dir[256];
@@ -78,12 +92,14 @@ typedef struct {
     int has_input_path;
 } AppConfig;
 
+/* 오류 메시지와 원문 위치 정보를 함께 전달할 때 사용하는 구조체이다. */
 typedef struct {
     char message[SQLPROC_MAX_ERROR_LEN];
     int line;
     int column;
 } ErrorInfo;
 
+/* 토크나이저가 만든 토큰 1개를 표현한다. */
 typedef struct {
     TokenType type;
     char text[SQLPROC_MAX_VALUE_LEN];
@@ -91,23 +107,27 @@ typedef struct {
     int column;
 } Token;
 
+/* 토큰 배열과 실제 사용 개수를 함께 묶은 구조체이다. */
 typedef struct {
     Token items[SQLPROC_MAX_TOKENS];
     int count;
 } TokenList;
 
+/* 정수/문자열 리터럴 값과 해당 위치를 저장한다. */
 typedef struct {
     LiteralType type;
     char text[SQLPROC_MAX_VALUE_LEN];
     SourceLocation location;
 } LiteralValue;
 
+/* 스키마의 컬럼 이름, 타입, PRIMARY KEY 여부를 저장한다. */
 typedef struct {
     char name[SQLPROC_MAX_NAME_LEN];
     DataType type;
     int is_primary_key;
 } ColumnSchema;
 
+/* 테이블 이름과 컬럼 목록, PRIMARY KEY 위치를 저장한다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     int column_count;
@@ -115,6 +135,7 @@ typedef struct {
     ColumnSchema columns[SQLPROC_MAX_COLUMNS];
 } TableSchema;
 
+/* WHERE 절의 조건 1개를 "컬럼 연산자 값" 형태로 저장한다. */
 typedef struct {
     char column_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation column_location;
@@ -123,11 +144,13 @@ typedef struct {
     LiteralValue value;
 } Predicate;
 
+/* 최대 2개의 WHERE 조건을 묶어 저장한다. */
 typedef struct {
     int count;
     Predicate items[SQLPROC_MAX_PREDICATES];
 } WhereClause;
 
+/* INSERT 문에서 필요한 테이블명, 컬럼 목록, 값 목록을 저장한다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation table_location;
@@ -139,6 +162,7 @@ typedef struct {
     LiteralValue values[SQLPROC_MAX_COLUMNS];
 } InsertStatement;
 
+/* SELECT 문에서 필요한 선택 컬럼과 WHERE 절 정보를 저장한다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation table_location;
@@ -149,6 +173,7 @@ typedef struct {
     WhereClause where_clause;
 } SelectStatement;
 
+/* CREATE INDEX 문에서 필요한 인덱스명, 테이블명, 컬럼명을 저장한다. */
 typedef struct {
     char index_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation index_location;
@@ -158,6 +183,7 @@ typedef struct {
     SourceLocation column_location;
 } CreateIndexStatement;
 
+/* 문장 종류와 실제 문장 데이터를 함께 담는 공용 AST 노드이다. */
 typedef struct {
     StatementType type;
     SourceLocation location;
@@ -166,6 +192,7 @@ typedef struct {
     CreateIndexStatement create_index_statement;
 } Statement;
 
+/* 파싱된 SQL 문장 여러 개를 순서대로 저장하는 구조체이다. */
 typedef struct {
     Statement items[SQLPROC_MAX_STATEMENTS];
     int count;
