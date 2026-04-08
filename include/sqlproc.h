@@ -3,15 +3,6 @@
 
 #include <stddef.h>
 
-/*
- * 이 헤더는 프로젝트 전체에서 공유하는 "공용 계약"입니다.
- * - 최대 길이 상수
- * - 토큰 / AST / 스키마 / 실행 설정 구조체
- * - 모듈 간에 호출하는 함수 선언
- *
- * 각 .c 파일은 이 헤더를 통해 같은 데이터 구조를 공유합니다.
- */
-
 #define SQLPROC_MAX_NAME_LEN 64
 #define SQLPROC_MAX_VALUE_LEN 64
 #define SQLPROC_MAX_COLUMNS 16
@@ -28,7 +19,6 @@ typedef enum {
     DATA_TYPE_STRING
 } DataType;
 
-/* 토크나이저가 SQL 문자열을 잘라 낸 결과 토큰 종류입니다. */
 typedef enum {
     TOKEN_EOF,
     TOKEN_IDENTIFIER,
@@ -56,20 +46,17 @@ typedef enum {
     TOKEN_KEYWORD_ON
 } TokenType;
 
-/* 파서가 구분하는 최상위 SQL 문장 종류입니다. */
 typedef enum {
     STATEMENT_INSERT,
     STATEMENT_SELECT,
     STATEMENT_CREATE_INDEX
 } StatementType;
 
-/* 파서 단계에서 읽은 리터럴의 실제 타입입니다. */
 typedef enum {
     LITERAL_INT,
     LITERAL_STRING
 } LiteralType;
 
-/* WHERE 절 비교 연산자 종류입니다. */
 typedef enum {
     COMPARE_EQUAL,
     COMPARE_LESS,
@@ -78,20 +65,11 @@ typedef enum {
     COMPARE_GREATER_EQUAL
 } CompareOperator;
 
-/* 파서/실행기 오류가 발생한 SQL 상의 위치입니다. */
 typedef struct {
     int line;
     int column;
 } SourceLocation;
 
-/*
- * 프로그램 실행 시 필요한 경로 설정입니다.
- * - schema_dir: <table>.schema 파일 위치
- * - data_dir: <table>.csv 파일 위치
- * - index_dir: <index>.idx 파일 위치
- * - input_path: 선택적으로 넘긴 SQL 파일 경로
- * - has_input_path: input_path가 실제로 주어졌는지 여부
- */
 typedef struct {
     char schema_dir[256];
     char data_dir[256];
@@ -100,14 +78,12 @@ typedef struct {
     int has_input_path;
 } AppConfig;
 
-/* 사용자에게 보여 줄 오류 메시지와 선택적 위치 정보입니다. */
 typedef struct {
     char message[SQLPROC_MAX_ERROR_LEN];
     int line;
     int column;
 } ErrorInfo;
 
-/* 토크나이저가 만든 토큰 1개입니다. */
 typedef struct {
     TokenType type;
     char text[SQLPROC_MAX_VALUE_LEN];
@@ -115,27 +91,23 @@ typedef struct {
     int column;
 } Token;
 
-/* SQL 문자열 전체를 자른 토큰 배열입니다. */
 typedef struct {
     Token items[SQLPROC_MAX_TOKENS];
     int count;
 } TokenList;
 
-/* 파서가 읽은 정수/문자열 리터럴입니다. */
 typedef struct {
     LiteralType type;
     char text[SQLPROC_MAX_VALUE_LEN];
     SourceLocation location;
 } LiteralValue;
 
-/* 스키마의 컬럼 1개 정의입니다. */
 typedef struct {
     char name[SQLPROC_MAX_NAME_LEN];
     DataType type;
     int is_primary_key;
 } ColumnSchema;
 
-/* 테이블 스키마 전체 정의입니다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     int column_count;
@@ -143,7 +115,6 @@ typedef struct {
     ColumnSchema columns[SQLPROC_MAX_COLUMNS];
 } TableSchema;
 
-/* WHERE 절의 조건 1개입니다. 예: age >= 20 */
 typedef struct {
     char column_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation column_location;
@@ -152,13 +123,11 @@ typedef struct {
     LiteralValue value;
 } Predicate;
 
-/* 현재 프로젝트가 지원하는 WHERE 절 전체 정보입니다. */
 typedef struct {
     int count;
     Predicate items[SQLPROC_MAX_PREDICATES];
 } WhereClause;
 
-/* INSERT 문 AST입니다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation table_location;
@@ -170,7 +139,6 @@ typedef struct {
     LiteralValue values[SQLPROC_MAX_COLUMNS];
 } InsertStatement;
 
-/* SELECT 문 AST입니다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation table_location;
@@ -181,7 +149,6 @@ typedef struct {
     WhereClause where_clause;
 } SelectStatement;
 
-/* CREATE INDEX 문 AST입니다. */
 typedef struct {
     char index_name[SQLPROC_MAX_NAME_LEN];
     SourceLocation index_location;
@@ -191,7 +158,6 @@ typedef struct {
     SourceLocation column_location;
 } CreateIndexStatement;
 
-/* 최상위 SQL 문장 1개입니다. */
 typedef struct {
     StatementType type;
     SourceLocation location;
@@ -200,39 +166,127 @@ typedef struct {
     CreateIndexStatement create_index_statement;
 } Statement;
 
-/* SQL 파일 또는 입력 버퍼에서 읽은 문장들의 목록입니다. */
 typedef struct {
     Statement items[SQLPROC_MAX_STATEMENTS];
     int count;
 } SqlProgram;
 
-/* app.c */
+/* 커맨드라인 인수를 파싱하여 AppConfig를 채운다.
+ *
+ * @param argc    인수 개수
+ * @param argv    인수 배열
+ * @param config  결과를 저장할 설정 구조체 포인터
+ * @return        성공 시 1, 실패 시 0
+ */
 int parse_arguments(int argc, char **argv, AppConfig *config);
+
+/* 설정에 따라 파일 모드 또는 대화형 모드로 프로그램을 실행한다.
+ *
+ * @param config  실행 설정 구조체 포인터
+ * @return        성공 시 1, 실패 시 0
+ */
 int run_program(const AppConfig *config);
 
-/* app.c / tokenizer.c / parser.c / schema.c */
+/* SQL 파일을 읽어 버퍼에 저장한다.
+ *
+ * @param path         읽을 파일 경로
+ * @param buffer       내용을 저장할 버퍼
+ * @param buffer_size  버퍼 크기
+ * @param error        오류 정보 저장 포인터
+ * @return             성공 시 1, 실패 시 0
+ */
 int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo *error);
+
+/* SQL 문자열을 토큰 목록으로 변환한다.
+ *
+ * @param sql_text  입력 SQL 문자열
+ * @param tokens    결과 토큰 목록 포인터
+ * @param error     오류 정보 저장 포인터
+ * @return          성공 시 1, 실패 시 0
+ */
 int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error);
+
+/* 토큰 목록을 파싱하여 SQL 프로그램 AST를 생성한다.
+ *
+ * @param tokens   입력 토큰 목록 포인터
+ * @param program  결과 AST 저장 포인터
+ * @param error    오류 정보 저장 포인터
+ * @return         성공 시 1, 실패 시 0
+ */
 int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error);
+
+/* 스키마 디렉토리에서 테이블 스키마 파일을 읽어 파싱한다.
+ *
+ * @param schema_dir  스키마 파일 디렉토리 경로
+ * @param table_name  테이블 이름
+ * @param schema      결과 스키마 저장 포인터
+ * @param error       오류 정보 저장 포인터
+ * @return            성공 시 1, 실패 시 0
+ */
 int load_table_schema(const char *schema_dir,
                       const char *table_name,
                       TableSchema *schema,
                       ErrorInfo *error);
 
-/* executor.c / btree_index.c */
+/* SQL 프로그램의 모든 문장을 순서대로 실행한다.
+ *
+ * @param config   실행 설정 구조체 포인터
+ * @param program  실행할 SQL 프로그램 AST 포인터
+ * @param error    오류 정보 저장 포인터
+ * @return         성공 시 1, 실패 시 0
+ */
 int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error);
+
+/* CREATE INDEX 문을 실행하여 B+ 트리 인덱스 파일을 생성한다.
+ *
+ * @param config     실행 설정 구조체 포인터
+ * @param statement  CREATE INDEX AST 포인터
+ * @param error      오류 정보 저장 포인터
+ * @return           성공 시 1, 실패 시 0
+ */
 int create_index_from_statement(const AppConfig *config,
                                 const CreateIndexStatement *statement,
                                 ErrorInfo *error);
+
+/* 삽입된 행의 값을 해당 테이블의 모든 인덱스에 반영한다.
+ *
+ * @param config         실행 설정 구조체 포인터
+ * @param schema         테이블 스키마 포인터
+ * @param row_values     삽입된 행의 컬럼별 값 배열
+ * @param row_offset     CSV 파일 내 행의 바이트 오프셋
+ * @param changed_index  업데이트된 인덱스 수를 저장할 포인터
+ * @param error          오류 정보 저장 포인터
+ * @return               성공 시 1, 실패 시 0
+ */
 int update_all_indexes_for_row(const AppConfig *config,
                                const TableSchema *schema,
                                char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
                                long row_offset,
                                int *changed_index,
                                ErrorInfo *error);
+
+/* CSV 파일의 현재 내용을 기반으로 테이블의 모든 인덱스를 재빌드한다.
+ *
+ * @param config  실행 설정 구조체 포인터
+ * @param schema  테이블 스키마 포인터
+ * @param error   오류 정보 저장 포인터
+ * @return        성공 시 1, 실패 시 0
+ */
 int rebuild_indexes_for_table(const AppConfig *config,
                               const TableSchema *schema,
                               ErrorInfo *error);
+
+/* SELECT 문의 WHERE 절에 맞는 인덱스를 찾아 해당 행 오프셋 목록을 반환한다.
+ *
+ * @param config        실행 설정 구조체 포인터
+ * @param schema        테이블 스키마 포인터
+ * @param statement     SELECT AST 포인터
+ * @param offsets       결과 오프셋 배열
+ * @param offset_count  결과 오프셋 개수를 저장할 포인터
+ * @param used_index    인덱스 사용 여부를 저장할 포인터
+ * @param error         오류 정보 저장 포인터
+ * @return              성공 시 1, 실패 시 0
+ */
 int try_collect_offsets_from_indexes(const AppConfig *config,
                                      const TableSchema *schema,
                                      const SelectStatement *statement,
@@ -241,10 +295,31 @@ int try_collect_offsets_from_indexes(const AppConfig *config,
                                      int *used_index,
                                      ErrorInfo *error);
 
-/* 디버깅/오류 메시지용 문자열 변환 함수입니다. */
+/* StatementType 열거값을 사람이 읽기 쉬운 문자열로 반환한다.
+ *
+ * @param type  문장 종류 열거값
+ * @return      해당 열거값의 이름 문자열
+ */
 const char *statement_type_name(StatementType type);
+
+/* CompareOperator 열거값을 사람이 읽기 쉬운 문자열로 반환한다.
+ *
+ * @param operator_type  비교 연산자 열거값
+ * @return               해당 열거값의 이름 문자열
+ */
 const char *compare_operator_name(CompareOperator operator_type);
+
+/* TokenType 열거값을 사람이 읽기 쉬운 문자열로 반환한다.
+ *
+ * @param type  토큰 종류 열거값
+ * @return      해당 열거값의 이름 문자열
+ */
 const char *token_type_name(TokenType type);
+
+/* ErrorInfo의 오류 메시지와 위치 정보를 stderr에 출력한다.
+ *
+ * @param error  출력할 오류 정보 포인터
+ */
 void print_error(const ErrorInfo *error);
 
 #endif

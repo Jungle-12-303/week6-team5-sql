@@ -26,25 +26,42 @@ C를 막 배운 사람이 이 프로젝트를 처음 읽을 때 참고하는 문
 이 문서는 "프로그램을 다 외우기"보다 "동작 원리를 눈으로 따라가기"에 맞춰
 읽는 것이 좋습니다.
 
+리팩터링 이후에는 코드 모양이 조금 더 `C99 스타일 + 한국어 문서 주석` 중심으로
+정리되었습니다. 그래서 예전보다 "짧은 함수 + 분명한 역할 분리 + 함수 시작부 설명"
+을 따라가며 읽기 쉬워졌습니다.
+
+먼저 같이 보면 좋은 문서:
+
+- [`docs/refactoring-visual-guide.md`](/Users/choeyeongbin/week6-team5-sql/docs/refactoring-visual-guide.md)
+- [`docs/code-reading-notes.md`](/Users/choeyeongbin/week6-team5-sql/docs/code-reading-notes.md)
+
 ### 추천 진행 순서
 
 | 시간 | 집중할 것 | 보면 되는 파일 | 목표 |
 |------|-----------|----------------|------|
-| 0~20분 | 입구 잡기 | `src/main.c`, `src/app.c` | 프로그램이 어디서 시작되는지 이해 |
-| 20~50분 | SQL 해체 | `src/tokenizer.c`, `src/parser.c` | 문자열이 AST가 되는 흐름 이해 |
-| 50~90분 | 실제 실행 | `src/executor.c` | INSERT/SELECT가 파일에 어떻게 반영되는지 이해 |
-| 90~120분 | 인덱스 감 잡기 | `src/btree_index.c` | B+ 트리가 왜 필요한지 큰 흐름 이해 |
+| 0~15분 | 큰 그림 잡기 | `docs/refactoring-visual-guide.md`, `docs/code-reading-notes.md` | 전체 파이프라인을 먼저 눈에 익힘 |
+| 15~35분 | 입구와 입력 모드 | `src/main.c`, `src/app.c` | 파일 모드와 REPL 모드가 어디서 갈라지는지 이해 |
+| 35~60분 | SQL 해체 | `src/tokenizer.c`, `src/parser.c` | 문자열이 토큰과 AST로 바뀌는 흐름 이해 |
+| 60~95분 | 실제 실행 | `src/schema.c`, `src/executor.c` | PK 검사, CSV 저장, SELECT 실행 흐름 이해 |
+| 95~120분 | 인덱스 감 잡기 | `src/btree_index.c`, `tests/test_runner.c` | B+ 트리와 테스트를 함께 보며 동작 확인 |
+
+### 리팩터링 후 읽기 포인트
+
+- 함수 위 한국어 주석을 먼저 읽고 본문으로 내려갑니다.
+- `for (int i = 0; ...)` 같은 선언 위치 변화보다 "왜 이 함수가 따로 생겼는지"를 먼저 봅니다.
+- `executor.c`와 `btree_index.c`는 rollback, rebuild, split처럼 실패 복구 흐름을 같이 봅니다.
+- `tests/test_runner.c`는 문서보다 더 정확한 실행 예시로 활용합니다.
 
 ### 오늘의 읽기 지도
 
 ```mermaid
 flowchart LR
-    A["1단계\nmain.c"] --> B["2단계\napp.c"]
+    A["1단계\nrefactoring-visual-guide.md"] --> B["2단계\nmain.c / app.c"]
     B --> C["3단계\ntokenizer.c"]
     C --> D["4단계\nparser.c"]
-    D --> E["5단계\nexecutor.c"]
-    E --> F["6단계\nschema.c / CSV"]
-    E --> G["7단계\nbtree_index.c / .idx"]
+    D --> E["5단계\nschema.c / executor.c"]
+    E --> F["6단계\nbtree_index.c"]
+    F --> G["7단계\ntests/test_runner.c"]
 
     style A fill:#e3f2fd
     style B fill:#e3f2fd
