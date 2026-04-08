@@ -1,43 +1,84 @@
-# 초심자 친화형 C99 SQL 처리기
+# `week6-team5-sql`
 
-SQL 파일을 실행하면 CSV 파일에 데이터를 읽고 쓰는 작은 SQL 처리기입니다.
-초심자가 읽기 쉽도록 `C99`의 기본 문법만 사용했고, 어려운 흐름에는
-한국어 주석을 붙였습니다.
+> SQL 문자열을 토큰, 구조체, CSV 입출력으로 연결한 C99 기반 미니 SQL 처리기
 
 ## 한눈에 보기
 
-- 지원 문장: `INSERT`, `SELECT`
-- 데이터 저장: `CSV`
-- 빌드 기준: `-std=c99 -Wall -Wextra -Werror`
+| 항목 | 내용 |
+| --- | --- |
+| 목표 | SQL 실행 흐름을 초심자도 따라갈 수 있게 구현 |
+| 입력 | `.sql` 파일 |
+| 출력 | 표준 출력 + `.csv` 파일 |
+| 지원 문장 | `INSERT`, `SELECT` |
+| 저장 방식 | `CSV` |
+| 스키마 | `<table>.schema` |
+
+## 시스템 구조
+
+```mermaid
+flowchart LR
+    A["SQL File"] --> B["Tokenizer"]
+    B --> C["Parser"]
+    C --> D["Executor"]
+    D --> E["CSV"]
+    D --> F["Schema"]
+```
+
+## 실행 흐름
+
+```mermaid
+flowchart LR
+    A["프로그램 실행"] --> B["main.c"]
+    B --> C["app.c"]
+    C --> D["tokenizer.c"]
+    D --> E["parser.c"]
+    E --> F["executor.c"]
+    F --> G["schema.c / CSV"]
+```
+
+## 핵심 구조체 관계도
+
+```mermaid
+flowchart TD
+    A["TokenList<br/>SQL 문자열을 잘라 만든 토큰 묶음"] --> B["SqlProgram<br/>파싱이 끝난 SQL 문장 목록"]
+    B --> C["Statement<br/>문장 하나를 나타내는 공통 단위"]
+    C --> D["InsertStatement<br/>삽입 대상 테이블, 컬럼 목록, 값 목록"]
+    C --> E["SelectStatement<br/>조회 대상 테이블, 선택 컬럼 정보"]
+    D --> F["LiteralValue<br/>각 값의 타입과 실제 값"]
+    D --> G["TableSchema<br/>테이블 컬럼 순서와 타입 정보"]
+    E --> G
+    H["ErrorInfo<br/>오류 메시지와 위치 정보"] -. "전 단계 공용" .-> A
+    H -. "전 단계 공용" .-> B
+    H -. "전 단계 공용" .-> G
+```
 
 ## 지원 SQL
 
 ```sql
 INSERT INTO users VALUES (1, 'kim', 20);
-INSERT INTO users (id, name, age) VALUES (2, 'lee', 30);
+INSERT INTO users (name, id, age) VALUES ('lee', 2, 30);
 SELECT * FROM users;
 SELECT name, age FROM users;
 ```
 
-## 지원 범위
+## 시연 예시
 
-- 단일 테이블만 처리합니다.
-- 지원 타입은 `int`, `string` 두 가지입니다.
-- 문자열 최대 길이는 63자입니다.
+## 우리 팀의 포인트
 
-## 지원하지 않는 기능
+### 1. tokenizer와 parser를 분리해 오류를 단계별로 설명
 
-- `WHERE`, `AND`, `OR`
-- `JOIN`
-- `ORDER BY`
-- `UPDATE`
-- `DELETE`
-- `CREATE TABLE`, `CREATE INDEX`
-- 복합 인덱스, Primary KEY
+| 단계 | 대표 메시지 |
+| --- | --- |
+| Tokenizer | `지원하지 않는 문자를 찾았습니다.` |
+| Tokenizer | `문자열 리터럴이 닫히지 않았습니다.` |
+| Parser | `FROM 키워드가 필요합니다.` |
+| Parser | `문장 끝에는 세미콜론이 필요합니다.` |
+| Parser | `컬럼 수와 값 수가 일치하지 않습니다.` |
 
-## 디렉터리 구조
+### 2. 오류 위치를 함께 출력
 
 ```text
+<<<<<<< HEAD
 include/
   sqlproc.h
 src/
@@ -53,54 +94,33 @@ examples/
   demo.sql
   schemas/users.schema
 docs/session-logs/
+=======
+오류: 지원하지 않는 문자를 찾았습니다. (line 1, column 8)
+오류: FROM 키워드가 필요합니다. (line 1, column 13)
+>>>>>>> 7874cf3 (docs : README.md 내용 보완)
 ```
 
-## 빌드와 테스트
-
-```bash
-make
-make test
-```
-
-- 실행 파일은 `build/sqlproc`에 생성됩니다.
-- 테스트는 `build/test_runner`를 실행합니다.
-
-## 빠른 실행 예시
-
-```bash
-mkdir -p ./demo-data
-./build/sqlproc \
-  --schema-dir ./examples/schemas \
-  --data-dir ./demo-data \
-  ./examples/demo.sql
-```
-
-실행이 끝나면 `demo-data/users.csv`가 만들어집니다.
-
-## 파일 형식
-
-### 1. 스키마 파일
-
-경로 규칙은 `schemas/<table>.schema`입니다.
+### 3. 스키마 기반으로 컬럼 순서와 타입을 검증
 
 ```text
 id:int,name:string,age:int
 ```
 
-- 형식: `컬럼명:타입`
-- 타입은 `int` 또는 `string`만 사용합니다.
-- 컬럼 순서가 CSV 헤더 순서가 됩니다.
+- 컬럼 순서 기준을 통일
+- `int`, `string` 타입 검증
+- 컬럼 목록이 바뀌어도 이름 기준으로 재배치
 
-### 2. 데이터 파일
+## 협업과 회고
 
-경로 규칙은 `data/<table>.csv`입니다.
+| 주제 | 내용 |
+| --- | --- |
+| 리뷰 방식 | `AGENTS.md`의 멀티 페르소나 관점을 참고해 에이전트를 리뷰어처럼 활용 |
+| 협업 방식 | 한 컴퓨터에서 상세 프롬프트를 작성하고 같은 환경에서 바로 빌드·테스트 |
+| 효과 | 정확성, 자료구조 일관성, 초심자 가독성을 분리해 점검 가능 |
 
-```text
-id,name,age
-1,kim,20
-2,lee,30
-```
+## 한 줄 정리
 
+<<<<<<< HEAD
 - 첫 줄은 항상 헤더입니다.
 - 첫 `INSERT` 때 파일이 없으면 헤더를 자동으로 만듭니다.
 
@@ -149,3 +169,6 @@ id,name,age
 - `INSERT` 파서 (컬럼 목록 있음·없음)
 - 빈 SQL 파일 오류
 - CSV 기반 `INSERT`와 `SELECT` 통합 실행
+=======
+> `week6-team5-sql`은 SQL 처리 과정을 가장 작은 범위로 압축해, 내부 흐름이 보이도록 만든 교육용 SQL 처리기입니다.
+>>>>>>> 7874cf3 (docs : README.md 내용 보완)
