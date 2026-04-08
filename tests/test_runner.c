@@ -12,7 +12,7 @@
  * 초심자가 흐름을 따라가기 쉽도록 한 파일에서
  * - 인자 파싱
  * - 토크나이저/파서
- * - CSV 기반 실행기
+ * - CSV 기반 스토리지/실행기
  * 를 순서대로 검증합니다.
  */
 
@@ -20,6 +20,12 @@ static int ensure_directory(const char *path);
 static int write_text_file(const char *path, const char *text);
 static int file_contains_text(const char *path, const char *needle);
 static int capture_run_program(const AppConfig *config, const char *output_path);
+static int capture_storage_print_rows(const AppConfig *config,
+                                      const TableSchema *schema,
+                                      const int selected_indices[SQLPROC_MAX_COLUMNS],
+                                      int selected_count,
+                                      const char *output_path,
+                                      ErrorInfo *error);
 static int create_temp_workspace(char *base_path,
                                  size_t base_size,
                                  char *schema_dir,
@@ -316,6 +322,44 @@ static int capture_run_program(const AppConfig *config, const char *output_path)
     return result == 0;
 }
 
+static int capture_storage_print_rows(const AppConfig *config,
+                                      const TableSchema *schema,
+                                      const int selected_indices[SQLPROC_MAX_COLUMNS],
+                                      int selected_count,
+                                      const char *output_path,
+                                      ErrorInfo *error)
+{
+    FILE *file;
+    int saved_stdout;
+    int result;
+
+    /* storage_print_rows의 stdout을 파일로 받아 헤더/조회 출력을 검증합니다. */
+    file = fopen(output_path, "wb");
+    if (file == NULL) {
+        return 0;
+    }
+
+    fflush(stdout);
+    saved_stdout = dup(STDOUT_FILENO);
+    if (saved_stdout < 0) {
+        fclose(file);
+        return 0;
+    }
+
+    if (dup2(fileno(file), STDOUT_FILENO) < 0) {
+        close(saved_stdout);
+        fclose(file);
+        return 0;
+    }
+
+    result = storage_print_rows(config, schema, selected_indices, selected_count, error);
+    fflush(stdout);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+    fclose(file);
+    return result;
+}
+
 static int create_temp_workspace(char *base_path,
                                  size_t base_size,
                                  char *schema_dir,
@@ -359,6 +403,7 @@ static int test_insert_and_select_execution(void)
     char base_dir[256];
     char schema_dir[256];
     char data_dir[256];
+    char data_path[256];
     char sql_path[256];
     char output_path[256];
     char schema_path[256];
@@ -376,6 +421,7 @@ static int test_insert_and_select_execution(void)
     snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
     snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
     snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
 
     if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
         return 0;
@@ -397,7 +443,118 @@ static int test_insert_and_select_execution(void)
         return 0;
     }
 
+    if (!file_contains_text(data_path, "id,name,age\n1,kim,20\n2,lee,30\n")) {
+        return 0;
+    }
+
     return file_contains_text(output_path, "name\tage\nkim\t20\nlee\t30\n");
+}
+
+static int test_storage_print_rows_without_data_file(void)
+{
+    AppConfig config;
+    TableSchema schema;
+    ErrorInfo error;
+    int selected_indices[SQLPROC_MAX_COLUMNS];
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+    char output_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_storage_header_only_")) {
+        return 0;
+    }
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    memset(&schema, 0, sizeof(schema));
+    memset(&error, 0, sizeof(error));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+
+    if (!load_table_schema(config.schema_dir, "users", &schema, &error)) {
+        return 0;
+    }
+
+    selected_indices[0] = 0;
+    selected_indices[1] = 1;
+
+    if (!capture_storage_print_rows(&config,
+                                    &schema,
+                                    selected_indices,
+                                    2,
+                                    output_path,
+                                    &error)) {
+        return 0;
+    }
+
+    return file_contains_text(output_path, "id\tname\n");
+}
+
+static int test_storage_print_rows_header_mismatch(void)
+{
+    AppConfig config;
+    TableSchema schema;
+    ErrorInfo error;
+    int selected_indices[SQLPROC_MAX_COLUMNS];
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+    char data_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_storage_bad_header_")) {
+        return 0;
+    }
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(data_path, "name,id\nkim,1\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    memset(&schema, 0, sizeof(schema));
+    memset(&error, 0, sizeof(error));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+
+    if (!load_table_schema(config.schema_dir, "users", &schema, &error)) {
+        return 0;
+    }
+
+    selected_indices[0] = 0;
+    selected_indices[1] = 1;
+
+    if (storage_print_rows(&config, &schema, selected_indices, 2, &error)) {
+        return 0;
+    }
+
+    return strstr(error.message, "CSV 헤더 순서가 스키마와 다릅니다.") != NULL;
 }
 
 int main(void)
@@ -439,6 +596,16 @@ int main(void)
 
     if (!test_insert_and_select_execution()) {
         fprintf(stderr, "test_insert_and_select_execution failed\n");
+        return 1;
+    }
+
+    if (!test_storage_print_rows_without_data_file()) {
+        fprintf(stderr, "test_storage_print_rows_without_data_file failed\n");
+        return 1;
+    }
+
+    if (!test_storage_print_rows_header_mismatch()) {
+        fprintf(stderr, "test_storage_print_rows_header_mismatch failed\n");
         return 1;
     }
 
