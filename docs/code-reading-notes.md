@@ -8,52 +8,133 @@
 - 지금 프로그램이 어떤 순서로 움직이는지 한 장으로 기억하기
 - 코드를 읽을 때 "다음에 어느 파일을 보면 되는지" 바로 떠오르게 만들기
 
-## 1. 제일 먼저 기억할 큰 흐름
+## 1. 프로그램 파이프라인
 
 ```mermaid
 flowchart LR
-    A["main.c"] --> B["app.c"]
-    B --> C["tokenizer.c"]
-    C --> D["parser.c"]
-    D --> E["executor.c"]
-    E --> F["CSV / .idx 파일"]
-```
+    A["프로그램 실행"] --> B["main.c"]
+    B --> C["app.c"]
+    C --> D["tokenizer.c"]
+    D --> E["parser.c"]
+    E --> F["executor.c"]
+    F --> G["schema.c / CSV / .idx"]
 
-이 그림은 여전히 유효합니다.  
-리팩터링이 들어가도 프로그램의 핵심 파이프라인은 바뀌지 않았습니다.
+```
 
 한 줄 요약:
 
 > SQL 문자열을 받아서, 토큰과 AST로 해석하고, 마지막에 CSV와 인덱스 파일에 반영하는 프로그램
 
-## 2. refactoring 후 달라진 읽기 포인트
+## 2. 프로그램 실행 방법
 
-리팩터링 이후 코드를 읽을 때는 아래를 먼저 보면 됩니다.
+```mermaid
+flowchart LR
+    A["터미널에서
+    프로그램 실행"] --> B["운영체제가
+    argv 구성"]
+    B --> C["main(argc, argv)"]
+    C --> D["parse_arguments()"]
+    D --> E{"argc"}
+    E -- "7" --> F["REPL"]
+    E -- "8" --> G["파일"]
 
-- 함수 위 한국어 설명 주석이 많이 추가되었습니다.
-- 함수가 더 잘게 나뉘어서 "한 함수가 한 역할"을 맡는 구조가 더 분명해졌습니다.
-- `executor.c`, `btree_index.c`는 성공 경로뿐 아니라 rollback, rebuild 같은
-  실패 복구 흐름도 따라가기 쉬워졌습니다.
-- `tests/test_runner.c`를 예제처럼 읽기가 더 좋아졌습니다.
+```
+### 2-1. 터미널 명령어
 
-즉 예전보다 "코드 줄 하나하나"보다 "함수 단위 역할"을 먼저 파악하기 좋은 상태입니다.
+먼저 프로그램을 빌드합니다.
 
-## 3. 파일별로 내가 이해한 역할
+```bash
+make
+```
 
-### main.c
+`make`는 소스코드를 컴파일해서 실행 파일 `./build/sqlproc`를 만드는 명령어입니다.
+
+빌드가 끝나면 아래 두 가지 방식으로 실행할 수 있습니다.
+
+- REPL 모드:
+  `REPL(Read-Eval-Print Loop)`은 터미널에서 SQL을 한 줄씩 입력하고,
+  바로 실행 결과를 확인하는 대화형 모드입니다.
+
+  schema-dir : 테이블 규칙
+  
+
+```bash
+./build/sqlproc --schema-dir ./examples/schemas --data-dir ./demo-data --index-dir ./demo-indexes
+```
+
+- 파일 모드:
+  미리 작성한 SQL 파일을 한 번에 실행하는 모드입니다.
+
+```bash
+./build/sqlproc --schema-dir ./examples/schemas --data-dir ./demo-data --index-dir ./demo-indexes ./examples/demo.sql
+```
+
+### 2-2. 터미널 명령어에 넘기는 옵션
+
+이 프로그램은 실행할 때 아래 세 가지 경로를 알아야 합니다.
+
+- `--schema-dir`
+  테이블 규칙이 들어 있는 디렉터리입니다.
+  예를 들어 `users` 테이블을 읽을 때는
+  `./examples/schemas/users.schema` 같은 파일을 찾습니다.
+
+- `--data-dir`
+  실제 CSV 데이터 파일이 저장되는 디렉터리입니다.
+  예를 들어 `users` 테이블 데이터는
+  `./demo-data/users.csv` 같은 파일에 저장됩니다.
+
+- `--index-dir`
+  B+ 트리 인덱스 파일이 저장되는 디렉터리입니다.
+  예를 들어 `CREATE INDEX idx_users_age ON users(age);`를 실행하면
+  `./demo-indexes/idx_users_age.idx` 같은 파일이 생깁니다.
+
+쉽게 비유하면:
+
+- `schema-dir` = 양식 설명서 보관함
+- `data-dir` = 실제 데이터 보관함
+- `index-dir` = 빨리 찾기 위한 색인표 보관함
+
+왜 이 값을 인자로 넘기냐면,
+프로그램이 실행될 때마다 어떤 스키마 폴더, 어떤 데이터 폴더,
+어떤 인덱스 폴더를 쓸지 바꿀 수 있어야 하기 때문입니다.
+
+예를 들어 아래 명령은:
+
+```bash
+./build/sqlproc --schema-dir ./examples/schemas --data-dir ./demo-data --index-dir ./demo-indexes
+```
+
+프로그램에게 이렇게 말하는 것과 같습니다.
+
+- 스키마는 `./examples/schemas`에서 읽어라
+- 데이터는 `./demo-data`에서 읽고 써라
+- 인덱스는 `./demo-indexes`에 저장해라
+
+
+## 3. 각 파일 별 역할
+
+### 3-1. main.c
 
 `main.c`는 프로그램 시작점입니다.
 
-- 운영체제가 넘겨준 `argc`, `argv`를 받습니다.
-- `parse_arguments()`를 호출합니다.
-- 성공하면 `run_program()`에 실행을 넘깁니다.
+프로그램이 실행되기 전에는 아래 과정이 먼저 일어납니다.
 
-중요:
+- 사용자가 터미널에 명령어를 입력합니다.
+- 쉘이 명령어를 공백 기준으로 나누어 실행 파일 경로와 인자 목록을 만듭니다.
+- 운영체제가 실행 파일을 메모리에 올리고, 프로그램 실행에 필요한 스택과 실행 환경을 준비합니다.
+- 이때 쉘로부터 받은 인자 목록으로 `argv`, 인자 개수인 `argc`, 환경 변수 목록인 `envp`도 함께 준비됩니다.
+- 그 뒤 C 런타임을 거쳐 `main(argc, argv)`가 호출됩니다.
 
-- 여기서는 SQL 문장을 직접 읽거나 실행하지 않습니다.
-- 말 그대로 "입구" 역할만 합니다.
+`main.c` 안에서는 아래 일을 합니다.
 
-### app.c
+- 운영체제가 준비한 `argc`, `argv`를 받습니다.
+- `parse_arguments()`를 호출해 명령행 인자를 `AppConfig` 프로그램 실행 설정을 담는 구조체로 정리합니다.
+- 인자 형식이 올바르면 `run_program()`에 실행을 넘깁니다.
+
+즉 `main.c`는 SQL을 직접 실행하는 곳이라기보다,
+프로그램 실행에 필요한 입력 정보를 받아 다음 단계로 넘기는 입구 역할을 합니다.
+
+### 3-2. app.c
 
 `app.c`는 실행 흐름 관리자입니다.
 
@@ -64,17 +145,71 @@ flowchart LR
 - 완성된 SQL을 `run_sql_text()`로 넘김
 - 오류가 나면 사용자에게 출력
 
-내가 기억해야 할 함수:
-
-- `parse_arguments()`
-- `run_program()`
-- `run_interactive_mode()`
-- `run_sql_text()`
-
 특히 중요한 점:
 
 - 파일 모드와 REPL 모드는 처음만 다릅니다.
 - 중간부터는 둘 다 `run_sql_text()`로 합쳐집니다.
+
+#### 3-2-1. parse_arguments()
+- argv에 들어 있는 명령행 인자들을 읽어서 AppConfig 구조체에 정리하는 함수입니다.
+
+#### 3-2-2. run_program()
+
+- `main.c`가 넘겨준 `AppConfig`를 받아 최종적으로 어떤 방식으로 SQL을 실행할지 결정하는 함수입니다.
+
+```mermaid
+flowchart LR
+    A["run_program"] --> B{"input.sql 경로가 있는가?"}
+    B -- "Y" --> C["load_sql_file()"]
+    C --> D["run_sql_text()"]
+    B -- "N" --> E["run_interactive_mode()"]
+
+```
+
+1. `AppConfig` 안의 `has_input_path` 값을 확인합니다.
+2. SQL 파일 경로가 없으면 REPL 모드로 들어갑니다.
+3. SQL 파일 경로가 있으면 파일 내용을 읽습니다.
+4. 준비된 SQL 문자열을 `run_sql_text()`로 넘깁니다.
+5. 실패하면 오류를 출력하고 종료 코드를 반환합니다.
+
+#### 3-2-3. run_interactive_mode()
+- 사용자가 SQL을 한 줄씩 입력하면, 세미콜론(;)이 나올 때까지 모았다가 실행하고, 다시 다음 입력을 받는 함수입니다.
+
+```mermaid
+flowchart TD
+    A["REPL 시작"] --> B["프롬프트 출력"]
+    B --> C["한 줄 입력"]
+    C --> D{"exit / quit?"}
+    D -- "예" --> E["종료"]
+    D -- "아니오" --> F["sql_buffer에 누적"]
+    F --> G{"; 로 끝남?"}
+    G -- "아니오" --> B
+    G -- "예" --> H["run_sql_text() 실행"]
+    H --> I["버퍼 비우기"]
+    I --> B
+
+```
+1. 종료 명령인지 검사합니다.
+2. 종료 명령이면 run_sql_text()를 실행하지 않고 바로 함수를 종료합니다.
+3. 종료 명령이 아니면 입력한 내용을 sql_buffer에 누적합니다.
+4. 문장이 세미콜론(;)으로 끝나면 run_sql_text(config, sql_buffer, &error)를 실행합니다.
+
+#### 3-2-4. run_sql_text()
+
+- SQL 문자열 1개를 실제 실행 파이프라인으로 넘기는 공통 함수입니다.
+
+이 함수는 아래 세 단계를 순서대로 수행합니다.
+
+1. `tokenize_sql()`
+   SQL 문자열을 토큰으로 나눕니다.
+2. `parse_program()`
+   토큰 배열을 AST 구조체로 바꿉니다.
+3. `execute_program()`
+   AST를 실제 SQL 동작으로 실행합니다.
+
+즉 이 함수는 문자열 형태의 SQL을 받아
+`토큰화 -> 파싱 -> 실행`
+순서로 연결하는 역할을 합니다.
 
 ## 4. tokenizer.c 와 parser.c는 "해석" 단계
 
