@@ -365,6 +365,75 @@ static int find_leaf_node(FILE *file,
     }
 }
 
+static int find_leftmost_leaf(FILE *file,
+                              const IndexHeader *header,
+                              int *leaf_id,
+                              ErrorInfo *error)
+{
+    int node_id;
+
+    node_id = header->root_node_id;
+
+    while (1) {
+        BTreeNode node;
+
+        if (!read_node(file, node_id, &node, error)) {
+            return 0;
+        }
+
+        if (node.is_leaf) {
+            *leaf_id = node_id;
+            return 1;
+        }
+
+        node_id = node.child_ids[0];
+    }
+}
+
+static int find_search_start_leaf(FILE *file,
+                                  const IndexHeader *header,
+                                  const char *key,
+                                  int stop_before_equal,
+                                  int *leaf_id,
+                                  ErrorInfo *error)
+{
+    int node_id;
+
+    node_id = header->root_node_id;
+
+    while (1) {
+        BTreeNode node;
+        int child_index;
+
+        if (!read_node(file, node_id, &node, error)) {
+            return 0;
+        }
+
+        if (node.is_leaf) {
+            *leaf_id = node_id;
+            return 1;
+        }
+
+        child_index = 0;
+        while (child_index < node.key_count) {
+            int compare_result;
+
+            compare_result = compare_keys(header->column_type, key, node.keys[child_index]);
+            if (compare_result < 0) {
+                break;
+            }
+
+            if (compare_result == 0 && stop_before_equal) {
+                break;
+            }
+
+            child_index += 1;
+        }
+
+        node_id = node.child_ids[child_index];
+    }
+}
+
 static void insert_into_leaf(BTreeNode *leaf,
                              const IndexHeader *header,
                              const char *key,
@@ -1073,33 +1142,6 @@ int update_all_indexes_for_row(const AppConfig *config,
     return 1;
 }
 
-static int key_matches_predicate(int data_type,
-                                 const char *index_key,
-                                 const Predicate *predicate)
-{
-    int compare_result;
-
-    compare_result = compare_keys(data_type, index_key, predicate->value.text);
-
-    if (predicate->operator_type == COMPARE_EQUAL) {
-        return compare_result == 0;
-    }
-
-    if (predicate->operator_type == COMPARE_LESS) {
-        return compare_result < 0;
-    }
-
-    if (predicate->operator_type == COMPARE_LESS_EQUAL) {
-        return compare_result <= 0;
-    }
-
-    if (predicate->operator_type == COMPARE_GREATER) {
-        return compare_result > 0;
-    }
-
-    return compare_result >= 0;
-}
-
 static int append_offset(long offsets[SQLPROC_MAX_INDEX_RESULTS],
                          int *offset_count,
                          long row_offset,
@@ -1133,6 +1175,150 @@ static void sort_offsets(long offsets[SQLPROC_MAX_INDEX_RESULTS], int offset_cou
     }
 }
 
+static int collect_equal_offsets(FILE *file,
+                                 const IndexHeader *header,
+                                 const Predicate *predicate,
+                                 long offsets[SQLPROC_MAX_INDEX_RESULTS],
+                                 int *offset_count,
+                                 ErrorInfo *error)
+{
+    int leaf_id;
+
+    if (!find_search_start_leaf(file,
+                                header,
+                                predicate->value.text,
+                                1,
+                                &leaf_id,
+                                error)) {
+        return 0;
+    }
+
+    while (leaf_id >= 0) {
+        BTreeNode leaf;
+        int i;
+
+        if (!read_node(file, leaf_id, &leaf, error)) {
+            return 0;
+        }
+
+        for (i = 0; i < leaf.key_count; i++) {
+            int compare_result;
+
+            compare_result = compare_keys(header->column_type,
+                                          leaf.keys[i],
+                                          predicate->value.text);
+            if (compare_result < 0) {
+                continue;
+            }
+
+            if (compare_result > 0) {
+                return 1;
+            }
+
+            if (!append_offset(offsets, offset_count, leaf.row_offsets[i], error)) {
+                return 0;
+            }
+        }
+
+        leaf_id = leaf.next_leaf_id;
+    }
+
+    return 1;
+}
+
+static int collect_less_offsets(FILE *file,
+                                const IndexHeader *header,
+                                const Predicate *predicate,
+                                long offsets[SQLPROC_MAX_INDEX_RESULTS],
+                                int *offset_count,
+                                ErrorInfo *error)
+{
+    int leaf_id;
+
+    if (!find_leftmost_leaf(file, header, &leaf_id, error)) {
+        return 0;
+    }
+
+    while (leaf_id >= 0) {
+        BTreeNode leaf;
+        int i;
+
+        if (!read_node(file, leaf_id, &leaf, error)) {
+            return 0;
+        }
+
+        for (i = 0; i < leaf.key_count; i++) {
+            int compare_result;
+
+            compare_result = compare_keys(header->column_type,
+                                          leaf.keys[i],
+                                          predicate->value.text);
+            if (compare_result > 0 ||
+                (compare_result == 0 &&
+                 predicate->operator_type == COMPARE_LESS)) {
+                return 1;
+            }
+
+            if (!append_offset(offsets, offset_count, leaf.row_offsets[i], error)) {
+                return 0;
+            }
+        }
+
+        leaf_id = leaf.next_leaf_id;
+    }
+
+    return 1;
+}
+
+static int collect_greater_offsets(FILE *file,
+                                   const IndexHeader *header,
+                                   const Predicate *predicate,
+                                   long offsets[SQLPROC_MAX_INDEX_RESULTS],
+                                   int *offset_count,
+                                   ErrorInfo *error)
+{
+    int leaf_id;
+
+    if (!find_search_start_leaf(file,
+                                header,
+                                predicate->value.text,
+                                1,
+                                &leaf_id,
+                                error)) {
+        return 0;
+    }
+
+    while (leaf_id >= 0) {
+        BTreeNode leaf;
+        int i;
+
+        if (!read_node(file, leaf_id, &leaf, error)) {
+            return 0;
+        }
+
+        for (i = 0; i < leaf.key_count; i++) {
+            int compare_result;
+
+            compare_result = compare_keys(header->column_type,
+                                          leaf.keys[i],
+                                          predicate->value.text);
+            if (compare_result < 0 ||
+                (compare_result == 0 &&
+                 predicate->operator_type == COMPARE_GREATER)) {
+                continue;
+            }
+
+            if (!append_offset(offsets, offset_count, leaf.row_offsets[i], error)) {
+                return 0;
+            }
+        }
+
+        leaf_id = leaf.next_leaf_id;
+    }
+
+    return 1;
+}
+
 /*
  * 무엇을 하는가:
  * - 선택된 인덱스 파일을 따라가며 WHERE 조건에 맞는 row offset 후보를
@@ -1147,9 +1333,9 @@ static void sort_offsets(long offsets[SQLPROC_MAX_INDEX_RESULTS], int offset_cou
  * - 출력: 조건에 맞는 row offset 배열과 개수
  *
  * 핵심 흐름:
- * - 현재 구현은 모든 leaf 노드를 한 번씩 읽어 후보를 모읍니다.
- * - leaf 안의 키를 predicate와 비교해 맞는 row offset만 담고,
- *   마지막에는 row offset 순서로 다시 정렬해 조회 결과를 안정적으로 맞춥니다.
+ * - 비교 연산자에 따라 조회 시작 leaf를 먼저 찾습니다.
+ * - 그 뒤 필요한 leaf만 앞으로 따라가며 row offset 후보를 모읍니다.
+ * - 마지막에는 row offset 순서로 다시 정렬해 조회 결과를 안정적으로 맞춥니다.
  */
 static int collect_offsets_from_index(FILE *file,
                                       const IndexHeader *header,
@@ -1158,32 +1344,20 @@ static int collect_offsets_from_index(FILE *file,
                                       int *offset_count,
                                       ErrorInfo *error)
 {
-    int node_id;
-
     *offset_count = 0;
 
-    for (node_id = 0; node_id < header->next_node_id; node_id++) {
-        BTreeNode leaf;
-        int i;
-
-        if (!read_node(file, node_id, &leaf, error)) {
+    if (predicate->operator_type == COMPARE_EQUAL) {
+        if (!collect_equal_offsets(file, header, predicate, offsets, offset_count, error)) {
             return 0;
         }
-
-        if (!leaf.is_leaf) {
-            continue;
+    } else if (predicate->operator_type == COMPARE_LESS ||
+               predicate->operator_type == COMPARE_LESS_EQUAL) {
+        if (!collect_less_offsets(file, header, predicate, offsets, offset_count, error)) {
+            return 0;
         }
-
-        for (i = 0; i < leaf.key_count; i++) {
-            if (!key_matches_predicate(header->column_type,
-                                       leaf.keys[i],
-                                       predicate)) {
-                continue;
-            }
-
-            if (!append_offset(offsets, offset_count, leaf.row_offsets[i], error)) {
-                return 0;
-            }
+    } else {
+        if (!collect_greater_offsets(file, header, predicate, offsets, offset_count, error)) {
+            return 0;
         }
     }
 

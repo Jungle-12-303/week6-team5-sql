@@ -920,6 +920,142 @@ static int test_btree_duplicate_split_query(void)
     return file_equals_text(output_path, expected_output);
 }
 
+static int test_btree_range_query_short_scan(void)
+{
+    AppConfig config;
+    TableSchema schema;
+    SelectStatement statement;
+    ErrorInfo error;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char index_dir[256];
+    char insert_sql_path[256];
+    char create_index_sql_path[256];
+    char select_sql_path[256];
+    char output_path[256];
+    char schema_path[256];
+    long offsets[SQLPROC_MAX_INDEX_RESULTS];
+    int offset_count;
+    int used_index;
+    FILE *file;
+    int i;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               index_dir,
+                               sizeof(index_dir),
+                               "sqlproc_btree_range_test_")) {
+        return 0;
+    }
+
+    snprintf(insert_sql_path, sizeof(insert_sql_path), "%s/insert.sql", base_dir);
+    snprintf(create_index_sql_path, sizeof(create_index_sql_path), "%s/create_index.sql", base_dir);
+    snprintf(select_sql_path, sizeof(select_sql_path), "%s/select.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+
+    if (!write_text_file(schema_path, "id:int:pk,age:int\n")) {
+        return 0;
+    }
+
+    file = fopen(insert_sql_path, "wb");
+    if (file == NULL) {
+        return 0;
+    }
+
+    for (i = 1; i <= 12; i++) {
+        fprintf(file, "INSERT INTO users (id, age) VALUES (%d, %d);", i, i * 10);
+    }
+    fputc('\n', file);
+    fclose(file);
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.index_dir, sizeof(config.index_dir), "%s", index_dir);
+    config.has_input_path = 1;
+    snprintf(config.input_path, sizeof(config.input_path), "%s", insert_sql_path);
+
+    if (run_program(&config) != 0) {
+        return 0;
+    }
+
+    if (!write_text_file(create_index_sql_path,
+                         "CREATE INDEX idx_users_age ON users(age);\n")) {
+        return 0;
+    }
+
+    snprintf(config.input_path, sizeof(config.input_path), "%s", create_index_sql_path);
+    if (run_program(&config) != 0) {
+        return 0;
+    }
+
+    if (!load_table_schema(schema_dir, "users", &schema, &error)) {
+        return 0;
+    }
+
+    memset(&statement, 0, sizeof(statement));
+    snprintf(statement.table_name, sizeof(statement.table_name), "users");
+    statement.where_clause.count = 1;
+    snprintf(statement.where_clause.items[0].column_name,
+             sizeof(statement.where_clause.items[0].column_name),
+             "age");
+    statement.where_clause.items[0].operator_type = COMPARE_LESS;
+    statement.where_clause.items[0].value.type = LITERAL_INT;
+    snprintf(statement.where_clause.items[0].value.text,
+             sizeof(statement.where_clause.items[0].value.text),
+             "35");
+
+    if (!try_collect_offsets_from_indexes(&config,
+                                          &schema,
+                                          &statement,
+                                          offsets,
+                                          &offset_count,
+                                          &used_index,
+                                          &error)) {
+        return 0;
+    }
+
+    if (!used_index || offset_count != 3) {
+        return 0;
+    }
+
+    statement.where_clause.items[0].operator_type = COMPARE_GREATER_EQUAL;
+    snprintf(statement.where_clause.items[0].value.text,
+             sizeof(statement.where_clause.items[0].value.text),
+             "100");
+
+    if (!try_collect_offsets_from_indexes(&config,
+                                          &schema,
+                                          &statement,
+                                          offsets,
+                                          &offset_count,
+                                          &used_index,
+                                          &error)) {
+        return 0;
+    }
+
+    if (!used_index || offset_count != 3) {
+        return 0;
+    }
+
+    if (!write_text_file(select_sql_path, "SELECT id, age FROM users WHERE age >= 100;\n")) {
+        return 0;
+    }
+
+    snprintf(config.input_path, sizeof(config.input_path), "%s", select_sql_path);
+    if (!capture_run_program(&config, output_path)) {
+        return 0;
+    }
+
+    return file_equals_text(output_path, "id\tage\n10\t100\n11\t110\n12\t120\n");
+}
+
 static int test_interactive_insert_and_select(void)
 {
     AppConfig config;
@@ -1107,6 +1243,11 @@ int main(void)
 
     if (!test_btree_duplicate_split_query()) {
         fprintf(stderr, "test_btree_duplicate_split_query failed\n");
+        return 1;
+    }
+
+    if (!test_btree_range_query_short_scan()) {
+        fprintf(stderr, "test_btree_range_query_short_scan failed\n");
         return 1;
     }
 
