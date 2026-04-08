@@ -17,6 +17,8 @@ C를 막 배운 사람이 이 프로젝트를 처음 읽을 때 참고하는 문
 8. [오류 처리 패턴](#8-오류-처리-패턴)
 9. [빌드 및 실행 방법](#9-빌드-및-실행-방법)
 
+> executor.c · storage.c의 상세 함수 흐름은 [docs/storage-executor.md](docs/storage-executor.md)에서 다룹니다.
+
 ---
 
 ## 1. 프로젝트 한 줄 요약
@@ -60,7 +62,8 @@ week6-team5-sql/
 │   ├── tokenizer.c     ← SQL 문자열 → 토큰 조각
 │   ├── parser.c        ← 토큰 → SQL 문장 구조체
 │   ├── schema.c        ← 테이블 스키마 파일 읽기
-│   └── executor.c      ← SQL 문장 실제 실행 (CSV 읽기/쓰기)
+│   ├── executor.c      ← SQL 검증 및 실행 흐름 제어
+│   └── storage.c       ← CSV 파일 경로·헤더·행 입출력
 ├── tests/
 │   └── test_runner.c   ← 통합 테스트
 ├── examples/
@@ -76,7 +79,7 @@ week6-team5-sql/
 ```
 sqlproc.h               (설계도 — 구조체, 함수 선언)
     ↑ #include
-tokenizer.c  parser.c  executor.c ...  (실제 구현체)
+tokenizer.c  parser.c  executor.c  storage.c ...  (실제 구현체)
 ```
 
 > **비유**: `.h`는 레스토랑 메뉴판(무슨 요리가 있는지), `.c`는 주방(요리를 실제로 만드는 곳).
@@ -90,9 +93,10 @@ flowchart TD
     A(["input.sql 파일"]) --> B["app.c\nSQL 파일 읽기"]
     B --> C["tokenizer.c\n문자열 → 토큰 배열"]
     C --> D["parser.c\n토큰 → SQL 문장 구조체"]
-    D --> E["executor.c\nSQL 문장 실행"]
+    D --> E["executor.c\nSQL 검증 및 실행 흐름 제어"]
     E --> F["schema.c\n스키마 파일 읽기"]
-    E --> G[("CSV 파일\n데이터 저장/읽기")]
+    E -->|"storage_append_row()\nstorage_print_rows()"| H["storage.c\nCSV 파일 입출력"]
+    H --> G[("CSV 파일\n데이터 저장/읽기")]
 
     style A fill:#e8f5e9
     style G fill:#fff9c4
@@ -145,12 +149,14 @@ graph LR
         D["parser.c\n구문 분석"]
     end
     subgraph 실행
-        E["executor.c\nSQL 실행"]
+        E["executor.c\nSQL 검증·실행 제어"]
         F["schema.c\n스키마 로더"]
+        G["storage.c\nCSV 파일 입출력"]
     end
 
     A --> B --> C --> D --> E
     E --> F
+    E --> G
 ```
 
 | 파일 | 주요 함수 | 한 줄 설명 |
@@ -160,7 +166,8 @@ graph LR
 | `tokenizer.c` | `tokenize_sql()` | 문자열을 `TokenList`로 변환 |
 | `parser.c` | `parse_program()` | `TokenList`를 `SqlProgram`으로 변환 |
 | `schema.c` | `load_table_schema()` | `.schema` 파일 읽어 `TableSchema` 반환 |
-| `executor.c` | `execute_program()` | INSERT/SELECT 실행, CSV 읽기·쓰기 |
+| `executor.c` | `execute_program()` | SQL 타입·이름 검증, storage.c 호출 |
+| `storage.c` | `storage_append_row()`, `storage_print_rows()` | CSV 경로·헤더·행 읽기/쓰기 |
 
 ---
 
@@ -379,20 +386,36 @@ flowchart TD
     J --> K[완료]
 ```
 
-### 6-3. 실행 (executor.c)
+### 6-3. 실행 (executor.c + storage.c)
 
-SQL 문장 구조체를 받아 실제 파일 I/O를 수행합니다.
+executor.c는 SQL 검증과 흐름 제어만 담당하고, 파일 읽기/쓰기는 storage.c에 완전히 위임합니다.
+
+```mermaid
+flowchart LR
+    subgraph executor["executor.c — SQL 로직"]
+        E1["타입·이름 검증"]
+        E2["컬럼 순서 재배치"]
+    end
+    subgraph storage["storage.c — 파일 입출력"]
+        S1["CSV 헤더 생성·검증"]
+        S2["행 읽기·쓰기"]
+    end
+    executor -->|"storage_append_row()\nstorage_print_rows()"| storage
+```
 
 **INSERT 실행 흐름:**
 
 ```mermaid
 flowchart TD
-    A[execute_insert] --> B["load_table_schema()\n스키마 파일 읽기"]
+    A["execute_insert()"] --> B["load_table_schema()\n스키마 파일 읽기"]
     B --> C["build_insert_row_values()\n구조체 값을 스키마 순서로 정렬"]
-    C --> D["ensure_data_file()\nCSV 없으면 헤더 생성, 있으면 헤더 검증"]
-    D --> E["fopen(path, 'ab')\n추가 모드로 열기"]
-    E --> F["write_csv_row()\nCSV 끝에 행 추가"]
-    F --> G["fclose()\n완료"]
+    C --> D["storage_append_row()"]
+
+    subgraph storage_detail["storage.c 내부"]
+        D --> E["ensure_data_file()\nCSV 없으면 헤더 생성, 있으면 헤더 검증"]
+        E --> F["fopen(path, 'ab')\n추가 모드로 열기"]
+        F --> G["write_csv_row()\nCSV 끝에 행 추가"]
+    end
 ```
 
 > **"ab" 모드란?**  
@@ -416,18 +439,21 @@ INSERT INTO users (age, name, id) VALUES (20, 'kim', 1);
 
 ```mermaid
 flowchart TD
-    A[execute_select] --> B["load_table_schema()\n스키마 파일 읽기"]
+    A["execute_select()"] --> B["load_table_schema()\n스키마 파일 읽기"]
     B --> C["resolve_selected_columns()\nSELECT * 또는 컬럼명 → 스키마 인덱스 배열"]
-    C --> D["fopen(path, 'rb')\nCSV 열기"]
-    D --> E{"파일 없음?"}
-    E -- ENOENT --> F["헤더만 출력하고 종료\n빈 테이블 처리"]
-    E -- 정상 --> G["헤더 행 읽기\n스키마와 일치 확인"]
-    G --> H["print_selected_header()\n선택 컬럼명 출력"]
-    H --> I["행 반복: fgets()"]
-    I --> J["parse_csv_line()\nCSV 행 파싱"]
-    J --> K["선택 컬럼만 탭 구분 출력"]
-    K --> I
-    I -- EOF --> L[완료]
+    C --> D["storage_print_rows()"]
+
+    subgraph storage_detail["storage.c 내부"]
+        D --> E{"CSV 파일 없음?"}
+        E -- ENOENT --> F["헤더만 출력하고 종료\n빈 테이블 처리"]
+        E -- 정상 --> G["헤더 행 읽기\n스키마와 일치 확인"]
+        G --> H["print_selected_header()\n선택 컬럼명 출력"]
+        H --> I["행 반복: fgets()"]
+        I --> J["parse_csv_line()\nCSV 행 파싱"]
+        J --> K["선택 컬럼만 탭 구분 출력"]
+        K --> I
+        I -- EOF --> L[완료]
+    end
 ```
 
 **parse_csv_line() 가 처리하는 CSV 형식:**
@@ -543,6 +569,7 @@ flowchart LR
     B["parser.c\n구문 오류"] --> E
     C["executor.c\n런타임 오류"] --> E
     D["schema.c\n파일 오류"] --> E
+    S["storage.c\nCSV 파일 오류"] --> E
 
     style E fill:#ffcdd2
 ```
@@ -621,8 +648,13 @@ id	name
 5. src/parser.c            ← parse_insert_statement(),
                               parse_select_statement() (25분)
 6. src/schema.c            ← load_table_schema() 함수 (15분)
-7. src/executor.c          ← execute_insert(), execute_select() (25분)
+7. src/executor.c          ← execute_insert(), execute_select() (20분)
+8. src/storage.c           ← storage_append_row(), storage_print_rows() (20분)
 ```
+
+> executor.c와 storage.c는 함께 읽는 것을 권장합니다.  
+> executor.c가 "무엇을"만 결정하고, storage.c가 "어떻게 파일에" 쓰는지 경계를 확인하세요.  
+> 자세한 함수 흐름은 [docs/storage-executor.md](docs/storage-executor.md)를 참고합니다.
 
 > 각 파일은 독립적으로 읽을 수 있습니다.  
 > 막히면 `sqlproc.h`에서 관련 구조체를 먼저 확인하세요.
