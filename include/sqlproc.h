@@ -183,7 +183,7 @@ int parse_arguments(int argc, char **argv, AppConfig *config);
 /* 설정에 따라 파일 모드 또는 대화형 모드로 프로그램을 실행한다.
  *
  * @param config  실행 설정 구조체 포인터
- * @return        성공 시 1, 실패 시 0
+ * @return        성공 시 0, 오류 시 1
  */
 int run_program(const AppConfig *config);
 
