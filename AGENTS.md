@@ -160,23 +160,12 @@ make test
 2. `make test`
 3. 변경된 README 예시나 CLI 예시를 실제로 한 번 실행
 
-REPL 예시:
-
-```bash
-mkdir -p ./demo-data ./demo-indexes
-./build/sqlproc \
-  --schema-dir ./examples/schemas \
-  --data-dir ./demo-data \
-  --index-dir ./demo-indexes
-```
-
 배치 예시:
 
 ```bash
 ./build/sqlproc \
   --schema-dir ./examples/schemas \
   --data-dir ./demo-data \
-  --index-dir ./demo-indexes \
   ./examples/demo.sql
 ```
 
