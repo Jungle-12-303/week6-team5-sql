@@ -7,6 +7,7 @@
  * 이 헤더는 프로젝트 전체에서 공유하는 "공용 계약"입니다.
  * - 최대 길이 상수
  * - 토큰 / SQL 문장 구조체 / 스키마 / 실행 설정
+ * - 스토리지 인터페이스
  * - 모듈 간에 호출하는 함수 선언
  *
  * 각 .c 파일은 이 헤더를 통해 같은 데이터 구조를 공유합니다.
@@ -167,7 +168,18 @@ int load_table_schema(const char *schema_dir,
                       TableSchema *schema,
                       ErrorInfo *error);
 
-/* executor.c — CSV 파일 읽기/쓰기 실행 */
+/* storage.c — CSV 파일 저장/조회 */
+int storage_append_row(const AppConfig *config,
+                       const TableSchema *schema,
+                       char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
+                       ErrorInfo *error);
+int storage_print_rows(const AppConfig *config,
+                       const TableSchema *schema,
+                       const int selected_indices[SQLPROC_MAX_COLUMNS],
+                       int selected_count,
+                       ErrorInfo *error);
+
+/* executor.c — SQL 문장 실행 흐름 제어 */
 int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error);
 
 
