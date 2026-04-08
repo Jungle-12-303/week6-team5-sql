@@ -720,6 +720,26 @@ static int insert_into_parent(FILE *file,
     }
 }
 
+/*
+ * 무엇을 하는가:
+ * - 인덱스 엔트리 1개를 B+ 트리에 삽입합니다.
+ *
+ * 왜 필요한가:
+ * - CSV에 새 행이 추가되면, 인덱스도 같은 정보를 알고 있어야 나중에
+ *   빠른 조회가 가능하기 때문입니다.
+ *
+ * 초심자용 큰 그림:
+ * - 1. 들어갈 leaf를 찾고
+ * - 2. 자리가 있으면 그냥 넣고
+ * - 3. 꽉 찼으면 leaf를 둘로 나누고
+ * - 4. 부모까지 필요한 만큼 분할을 전파합니다.
+ *
+ * 예시:
+ * - key = "30"
+ * - row_offset = 140
+ * -> "age가 30인 행은 CSV 140바이트 위치에 있다"는 뜻의 색인표 한 장을
+ *    트리에 끼워 넣는 셈입니다.
+ */
 static int insert_entry(FILE *file,
                         IndexHeader *header,
                         const char *key,
@@ -828,6 +848,21 @@ static int initialize_index_file(const char *path,
     return 1;
 }
 
+/*
+ * 무엇을 하는가:
+ * - 이미 CSV에 들어 있는 모든 행을 새 인덱스 파일에 다시 삽입합니다.
+ *
+ * 왜 필요한가:
+ * - CREATE INDEX를 했다고 해서 예전 데이터가 자동으로 인덱스에 들어 있는
+ *   것은 아니므로, 기존 CSV를 한 번 처음부터 끝까지 읽어 인덱스를 채워야
+ *   합니다.
+ *
+ * 초심자용 비유:
+ * - CSV는 창고 원본 장부이고,
+ * - 인덱스는 "빨리 찾기용 색인 카드"입니다.
+ * - 이 함수는 기존 장부를 처음부터 다시 읽으면서 색인 카드를 새로 만드는
+ *   작업입니다.
+ */
 static int append_existing_rows(const AppConfig *config,
                                 const TableSchema *schema,
                                 const IndexHeader *header,
@@ -869,6 +904,11 @@ static int append_existing_rows(const AppConfig *config,
         int value_count;
         IndexHeader current_header;
 
+        /*
+         * fgets로 줄을 읽기 "직전" 위치를 기억해야,
+         * 나중에 그 줄로 다시 바로 돌아올 수 있습니다.
+         * 그래서 ftell은 항상 fgets보다 먼저 호출합니다.
+         */
         row_offset = ftell(data_file);
         if (fgets(line, sizeof(line), data_file) == NULL) {
             break;

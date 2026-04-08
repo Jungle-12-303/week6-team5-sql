@@ -282,6 +282,30 @@ static int parse_value_list(ParserState *state,
     return 1;
 }
 
+/*
+ * 무엇을 하는가:
+ * - INSERT 문 1개를 읽어 InsertStatement 구조체로 채웁니다.
+ *
+ * 왜 필요한가:
+ * - 실행기는 문자열 원본을 직접 읽지 않고, "어느 테이블에 어떤 값을 넣을지"
+ *   정리된 구조체만 받기 때문입니다.
+ *
+ * 초심자용 핵심 포인트:
+ * - 여기서는 아직 CSV 파일에 아무것도 쓰지 않습니다.
+ * - 오직 "문장을 이해해서 메모리 속 설계도(AST)로 바꾸는 일"만 합니다.
+ *
+ * 읽는 예시 1:
+ * - INSERT INTO users VALUES (1, 'kim', 20);
+ *   -> table_name = "users"
+ *   -> has_column_list = 0
+ *   -> values = [1, "kim", 20]
+ *
+ * 읽는 예시 2:
+ * - INSERT INTO users (id, name) VALUES (1, 'kim');
+ *   -> has_column_list = 1
+ *   -> column_names = ["id", "name"]
+ *   -> values = [1, "kim"]
+ */
 static int parse_insert_statement(ParserState *state, Statement *statement, ErrorInfo *error)
 {
     InsertStatement *insert_statement;
@@ -369,6 +393,27 @@ static int parse_insert_statement(ParserState *state, Statement *statement, Erro
     return 1;
 }
 
+/*
+ * 무엇을 하는가:
+ * - SELECT 문 1개를 읽어 SelectStatement 구조체로 채웁니다.
+ *
+ * 왜 필요한가:
+ * - SELECT는 "어떤 테이블에서", "어떤 컬럼을", "어떤 조건으로" 읽을지
+ *   정보가 많기 때문에, 실행 전에 모양을 먼저 깔끔하게 정리해 둘 필요가
+ *   있습니다.
+ *
+ * 초심자용 핵심 포인트:
+ * - `SELECT *` 이면 select_all = 1 로 표시합니다.
+ * - `SELECT name, age` 처럼 별표가 아니면 column_names 배열에 직접 담습니다.
+ * - WHERE가 있으면 뒤에서 parse_where_clause()가 최대 2개 조건까지 읽습니다.
+ *
+ * 읽는 예시:
+ * - SELECT name, age FROM users WHERE age >= 20;
+ *   -> table_name = "users"
+ *   -> select_all = 0
+ *   -> column_names = ["name", "age"]
+ *   -> where_clause.count = 1
+ */
 static int parse_select_statement(ParserState *state, Statement *statement, ErrorInfo *error)
 {
     SelectStatement *select_statement;

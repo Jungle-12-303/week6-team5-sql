@@ -564,6 +564,28 @@ static int validate_primary_key_insert(FILE *file,
     return 1;
 }
 
+/*
+ * 무엇을 하는가:
+ * - INSERT AST 1개를 받아 실제 CSV 파일 끝에 새 행을 추가합니다.
+ *
+ * 왜 필요한가:
+ * - parser.c는 "무슨 SQL인지"까지만 이해하고 끝나므로,
+ *   실제 저장은 executor.c가 맡아야 합니다.
+ *
+ * 초심자용 큰 그림:
+ * - parser.c가 만든 설계도(InsertStatement)를 받아
+ *   "진짜 파일에 저장 가능한 한 줄"로 바꾸는 단계입니다.
+ *
+ * 실제 예시:
+ * - SQL: INSERT INTO users VALUES (1, 'kim', 20);
+ * - 스키마: id:int:pk,name:string,age:int
+ * - 최종 CSV 행: 1,kim,20\n
+ *
+ * 실패하면 어떻게 되는가:
+ * - PK가 중복이면 아예 쓰지 않습니다.
+ * - CSV 저장 뒤 인덱스 갱신이 실패하면 방금 쓴 CSV 행을 잘라내고,
+ *   인덱스를 다시 만들어 정합성을 맞춥니다.
+ */
 static int execute_insert(const AppConfig *config,
                           const InsertStatement *statement,
                           ErrorInfo *error)
@@ -627,6 +649,12 @@ static int execute_insert(const AppConfig *config,
                                     error)) {
         update_error = *error;
         fflush(file);
+        /*
+         * 방금 append한 위치(row_offset)까지 파일을 되돌립니다.
+         * 예:
+         * - row_offset이 12였다면, 헤더 뒤에 막 추가한 새 행은 잘리고
+         *   파일 길이는 다시 12바이트로 돌아갑니다.
+         */
         ftruncate(fileno(file), row_offset);
         fclose(file);
 
@@ -733,6 +761,24 @@ static int read_row_at_offset(FILE *file,
     return 1;
 }
 
+/*
+ * 무엇을 하는가:
+ * - SELECT AST 1개를 받아 결과 표를 stdout으로 출력합니다.
+ *
+ * 왜 필요한가:
+ * - SELECT는 단순히 CSV를 전부 읽는 것이 아니라,
+ *   스키마 확인, WHERE 검증, 인덱스 사용 여부 판단, 출력 컬럼 선택까지
+ *   여러 단계를 거쳐야 하기 때문입니다.
+ *
+ * 초심자용 큰 그림:
+ * - "어떤 줄이 조건에 맞는지 찾고"
+ * - "그 줄에서 어떤 칸만 보여줄지 정한 뒤"
+ * - "화면에 표처럼 출력하는 함수"입니다.
+ *
+ * 두 가지 길:
+ * - 인덱스가 있으면: 후보 행 위치(row_offset)만 먼저 모읍니다.
+ * - 인덱스가 없으면: CSV를 처음부터 끝까지 다 읽습니다.
+ */
 static int execute_select(const AppConfig *config,
                           const SelectStatement *statement,
                           ErrorInfo *error)
@@ -829,6 +875,13 @@ static int execute_select(const AppConfig *config,
     if (used_index) {
         int offset_index;
 
+        /*
+         * 인덱스를 썼더라도 WHERE를 한 번 더 검사합니다.
+         * 이유:
+         * - 인덱스가 age 하나만 있어도
+         *   WHERE age >= 20 AND id = 1 처럼 다른 조건이 함께 있을 수 있기
+         *   때문입니다.
+         */
         for (offset_index = 0; offset_index < candidate_count; offset_index++) {
             int value_count;
             int match_result;
@@ -876,6 +929,11 @@ static int execute_select(const AppConfig *config,
         return 1;
     }
 
+    /*
+     * full scan 경로입니다.
+     * 헤더 다음 줄부터 한 줄씩 읽으면서 조건을 검사합니다.
+     * 초심자 관점에서는 "가장 단순한 SELECT의 원형"이라고 보면 됩니다.
+     */
     while (fgets(line, sizeof(line), file) != NULL) {
         int value_count;
         int match_result;
