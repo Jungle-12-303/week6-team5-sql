@@ -26,33 +26,36 @@ flowchart LR
     E --> G["Schema File"]
 ```
 
-## 핵심 구조체
-
-| 구조체            | 역할                             | 생성 단계     | 포함                                   |
-| ----------------- | -------------------------------- | ------------- | -------------------------------------- |
-| `TokenList`       | SQL 문자열을 잘라낸 토큰 배열    | `tokenizer.c` | `Token[]`                              |
-| `SqlProgram`      | 파싱된 SQL 문장 목록             | `parser.c`    | `Statement[]`                          |
-| `Statement`       | `INSERT` / `SELECT` 구분 단위    | `parser.c`    | `InsertStatement` or `SelectStatement` |
-| `InsertStatement` | 테이블명, 컬럼명[], 값[]         | `parser.c`    | `LiteralValue[]`                       |
-| `SelectStatement` | 테이블명, `select_all`, 컬럼명[] | `parser.c`    | —                                      |
-| `TableSchema`     | 컬럼 순서·타입 정의              | `schema.c`    | `ColumnSchema[]`                       |
-| `ErrorInfo`       | 오류 메시지 + 위치               | 전 단계 공용  | —                                      |
-
-### 구조체 관계도
+## 실행 흐름
 
 ```mermaid
-flowchart TD
-    A["TokenList<br/>SQL을 자른 토큰 목록"] --> B["SqlProgram<br/>파싱된 문장 목록"]
-    B --> C["Statement<br/>문장 1개"]
-    C --> D["InsertStatement<br/>INSERT 정보"]
-    C --> E["SelectStatement<br/>SELECT 정보"]
-    D --> F["LiteralValue<br/>값 하나씩 저장"]
-    D --> G["TableSchema<br/>컬럼 순서와 타입 기준"]
-    E --> G
-    H["ErrorInfo<br/>오류 메시지와 위치"] -. 공용 .-> A
-    H -. 공용 .-> B
-    H -. 공용 .-> G
+flowchart LR
+    A["main.c"] --> B["app.c"]
+    B --> C["tokenizer.c"]
+    C --> D["parser.c"]
+    D --> E["executor.c"]
+    E --> F["storage.c / schema.c"]
 ```
+
+| 단계 | 함수 / 파일 | 핵심 역할 |
+| --- | --- | --- |
+| 1 | `main.c` | 프로그램 진입점 |
+| 2 | `app.c` | SQL 파일 읽기, 전체 실행 제어 |
+| 3 | `tokenizer.c` | SQL 문자열을 토큰 배열로 분리 |
+| 4 | `parser.c` | 토큰 배열을 `SqlProgram`으로 변환 |
+| 5 | `executor.c` + `storage.c` + `schema.c` | 스키마 확인 후 출력/CSV 반영 |
+
+## 핵심 구조체
+
+| 구조체 | 역할 | 생성 단계 | 포함 |
+| --- | --- | --- | --- |
+| `TokenList` | SQL 문자열을 잘라낸 토큰 배열 | `tokenizer.c` | `Token[]` |
+| `SqlProgram` | 파싱된 SQL 문장 목록 | `parser.c` | `Statement[]` |
+| `Statement` | `INSERT` / `SELECT` 구분 단위 | `parser.c` | `InsertStatement` or `SelectStatement` |
+| `InsertStatement` | 테이블명, 컬럼명[], 값[] | `parser.c` | `LiteralValue[]` |
+| `SelectStatement` | 테이블명, `select_all`, 컬럼명[] | `parser.c` | — |
+| `TableSchema` | 컬럼 순서·타입 정의 | `schema.c` | `ColumnSchema[]` |
+| `ErrorInfo` | 오류 메시지 + 위치 | 전 단계 공용 | — |
 
 ### 구조체를 사용하는 이유
 
@@ -69,130 +72,6 @@ flowchart TD
 - 디버깅할 때 문자열 전체를 다시 읽지 않고, 정리된 결과만 보면 됩니다.
 - 발표에서도 "문자열 -> 토큰 -> 문장 구조체 -> 실행" 흐름을 설명하기 쉽습니다.
 
-## 실행 흐름
-
-전체 흐름은  
-`프로그램 실행 -> main.c(진입점) -> app.c -> tokenizer.c -> parser.c -> executor.c -> schema.c / CSV`  
-입니다.
-
-```mermaid
-flowchart LR
-    A["프로그램 실행"] --> B["main.c<br/>진입점"]
-    B --> C["app.c<br/>SQL 파일 읽기"]
-    C --> D["tokenizer.c<br/>토큰 분리"]
-    D --> E["parser.c<br/>구조체 생성"]
-    E --> F["executor.c<br/>실행"]
-    F --> G["schema.c / CSV"]
-```
-
-### 1. `main.c`와 `app.c`
-
-`main.c`는 프로그램의 진입점입니다.  
-실행 인자를 확인한 뒤, 실제 SQL 처리 흐름은 `app.c`로 넘깁니다.  
-`app.c`에서는 SQL 파일 전체를 읽어서 tokenizer 단계로 전달합니다.
-
-```mermaid
-flowchart LR
-    A["프로그램 실행"] --> B["main.c"]
-    B --> C["app.c"]
-    C --> D["tokenizer.c"]
-    D --> E["parser.c"]
-    E --> F["executor.c"]
-    F --> G["storage.c"]
-    G --> H["schema.c / CSV"]
-```
-
-### 2. `tokenizer.c`
-
-tokenizer는 SQL 문자열을 토큰 단위로 자릅니다.
-
-예시:
-
-```sql
-SELECT name, age FROM users;
-```
-
-```mermaid
-flowchart LR
-    A["SELECT name, age FROM users;"] --> B["[SELECT] [name] [,] [age] [FROM] [users] [;]"]
-```
-
-즉, 문장 전체를 한 번에 처리하지 않고  
-키워드, 컬럼명, 쉼표, 세미콜론 같은 조각으로 먼저 나눕니다.
-
-### 3. `parser.c`
-
-parser는 tokenizer가 만든 토큰을 읽고  
-이 문장이 `INSERT`인지 `SELECT`인지 구분한 뒤 구조체에 담습니다.
-
-예를 들어 아래 토큰은
-
-```text
-[SELECT] [name] [,] [age] [FROM] [users] [;]
-```
-
-parser를 거치면 `SelectStatement` 구조체로 정리됩니다.
-
-```mermaid
-flowchart LR
-    A["[SELECT] [name] [,] [age] [FROM] [users] [;]"] --> B["SelectStatement<br/>table_name = users<br/>select_all = 0<br/>column_names = [name, age]"]
-```
-
-구조체 기준으로 보면 아래처럼 설명할 수 있습니다.
-
-```text
-SelectStatement
-- table_name: users
-- select_all: 0
-- column_names: [name, age]
-```
-
-`INSERT`도 같은 방식입니다.
-
-```sql
-INSERT INTO users (name, id, age) VALUES ('kim', 1, 20);
-```
-
-이 문장은 parser를 거치면 다음처럼 정리됩니다.
-
-```text
-InsertStatement
-- table_name: users
-- column_names: [name, id, age]
-- values: ['kim', 1, 20]
-```
-
-즉, parser 단계는  
-토큰 배열을 읽고 "무슨 문장인지", "어떤 테이블인지", "어떤 컬럼과 값인지"를  
-구조체에 담아 주는 단계입니다.
-
-### 4. `executor.c`
-
-executor는 parser가 만든 구조체를 가지고  
-실제 CSV 읽기/쓰기 작업을 수행합니다.
-
-`SELECT` 예시:
-
-```mermaid
-flowchart LR
-    A["SelectStatement<br/>users, name, age"] --> B["users.schema<br/>컬럼 기준 확인"]
-    B --> C["users.csv<br/>행 읽기"]
-    C --> D["name, age 출력"]
-```
-
-`INSERT` 예시:
-
-```mermaid
-flowchart LR
-    A["InsertStatement<br/>name, id, age / 'kim', 1, 20"] --> B["users.schema<br/>컬럼 순서 확인"]
-    B --> C["id, name, age 순서로 재배치"]
-    C --> D["1,kim,20 저장"]
-```
-
-즉, executor 단계는  
-구조체에 정리된 정보를 schema 기준으로 확인하고,  
-CSV 파일에 반영하는 단계입니다.
-
 ## 지원 SQL
 
 ```sql
@@ -204,27 +83,22 @@ SELECT name, age FROM users;
 
 ## 시연 예시
 
-```bash
-./build/sqlproc \
-  --schema-dir ./examples/schemas \
-  --data-dir /tmp/demo-data \
-  ./examples/demo.sql
-```
+![시연 예시](./docs/images/demo-run.png)
 
-```text
-id      name    age
-20      yoon    100
-2       lee     30
-3       park    40
-id      name
-20      yoon
-2       lee
-3       park
+```sql
+INSERT INTO users VALUES (1, 'kim', 20);
+INSERT INTO users (name, age, id) VALUES ('lee', 30, 2);
+INSERT INTO users VALUES (3, 'park', 27);
+INSERT INTO users (age, id, name) VALUES (41, 4, 'choi');
+INSERT INTO users VALUES (5, 'jung', 33);
+SELECT * FROM users;
+SELECT name, age FROM users;
+SELECT age, id FROM users;
 ```
 
 ## 우리 팀의 포인트
 
-### 1. tokenizer와 parser의 오류를 나눠서 처리
+### 1. tokenizer, parser, executor의 오류를 나눠서 처리
 
 | 단계      | 대표 메시지                            |
 | --------- | -------------------------------------- |
@@ -233,19 +107,44 @@ id      name
 | Parser    | `FROM 키워드가 필요합니다.`            |
 | Parser    | `문장 끝에는 세미콜론이 필요합니다.`   |
 | Parser    | `컬럼 수와 값 수가 일치하지 않습니다.` |
+| Executor  | `INSERT 값 타입이 스키마와 맞지 않습니다.` |
+| Executor  | `SELECT 대상 컬럼이 스키마에 없습니다.` |
 
 ```mermaid
 flowchart LR
     A["입력 SQL"] --> B["Tokenizer 오류<br/>지원하지 않는 문자"]
     A --> C["Parser 오류<br/>키워드 누락 / 문장 형식 오류"]
+    A --> D["Executor 오류<br/>스키마 불일치 / 타입 오류"]
 ```
 
 예시:
 
 - tokenizer 오류: `SELECT @ FROM users;`
 - parser 오류: `SELECT name users;`
+- executor 오류: `INSERT INTO users VALUES ('kim', 1, 20);`
 
-### 2. 오류 위치까지 함께 출력
+### 2. storage.c에서도 파일/CSV 오류를 따로 처리
+
+| 구분 | 대표 메시지 |
+| --- | --- |
+| Storage | `데이터 파일을 만들 수 없습니다.` |
+| Storage | `기존 데이터 파일 헤더 형식이 잘못되었습니다.` |
+| Storage | `CSV 헤더가 스키마와 다릅니다.` |
+| Storage | `CSV 행을 읽는 중 오류가 발생했습니다.` |
+
+```mermaid
+flowchart LR
+    A["storage_append_row()<br/>storage_print_rows()"] --> B["파일 열기 / 헤더 확인"]
+    B --> C["CSV 형식 검증"]
+    C --> D["Storage 오류 메시지 반환"]
+```
+
+예시:
+
+- storage 오류: `데이터 파일을 만들 수 없습니다.`
+- storage 오류: `CSV 헤더가 스키마와 다릅니다.`
+
+### 3. 오류 위치까지 함께 출력
 
 ```text
 오류: 지원하지 않는 문자를 찾았습니다. (line 1, column 8)
@@ -258,7 +157,7 @@ flowchart LR
     C["SELECT name users;"] --> D["line 1, column 13"]
 ```
 
-### 3. 스키마를 기준으로 컬럼 순서와 타입을 맞춤
+### 4. 스키마를 기준으로 컬럼 순서와 타입을 맞춤
 
 ```text
 id:int,name:string,age:int
@@ -275,7 +174,7 @@ flowchart LR
     C --> D["1,kim,20 저장"]
 ```
 
-### 4. executor와 storage를 분리해 역할을 명확히 구분
+### 5. executor와 storage를 분리해 역할을 명확히 구분
 
 ```mermaid
 flowchart LR
