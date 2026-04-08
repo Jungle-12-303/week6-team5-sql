@@ -45,6 +45,50 @@ flowchart LR
 | 4 | `parser.c` | 토큰 배열을 `SqlProgram`으로 변환 |
 | 5 | `executor.c` + `storage.c` + `schema.c` | 스키마 확인 후 출력/CSV 반영 |
 
+### 단계별 예시 이미지
+
+예시: tokenizer
+
+```mermaid
+flowchart LR
+    A["SELECT name, age FROM users;"] --> B["[SELECT] [name] [,] [age] [FROM] [users] [;]"]
+```
+
+예시: parser - SELECT
+
+```mermaid
+flowchart LR
+    A["[SELECT] [name] [,] [age] [FROM] [users] [;]"] --> B["SelectStatement<br/>table_name = users<br/>select_all = 0<br/>column_names = [name, age]"]
+```
+
+예시: executor + storage - SELECT
+
+```mermaid
+flowchart LR
+    A["SelectStatement<br/>users / name, age"] --> B["load_table_schema()"]
+    B --> C["resolve_selected_columns()"]
+    C --> D["storage_print_rows()"]
+    D --> E["name age 출력"]
+```
+
+예시: parser - INSERT
+
+```mermaid
+flowchart LR
+    A["INSERT INTO users (name, age, id) VALUES ('lee', 30, 2);"] --> B["InsertStatement<br/>table_name = users<br/>column_names = [name, age, id]<br/>values = ['lee', 30, 2]"]
+```
+
+예시: executor + storage - INSERT
+
+```mermaid
+flowchart LR
+    A["InsertStatement<br/>name, age, id"] --> B["load_table_schema()"]
+    B --> C["build_insert_row_values()"]
+    C --> D["id, name, age 순서로 재배치"]
+    D --> E["storage_append_row()"]
+    E --> F["2,lee,30 저장"]
+```
+
 ## 핵심 구조체
 
 | 구조체 | 역할 | 생성 단계 | 포함 |
