@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "sqlproc.h"
@@ -92,8 +91,12 @@ int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo 
     /*
      * 파일이 버퍼보다 큰지 확인하기 위해 1바이트를 더 읽어 봅니다.
      * 추가로 읽히면 파일이 너무 큰 것이므로 잘린 채 실행하지 않고 실패합니다.
+     * buffer 대신 probe를 사용해 이미 읽은 SQL 내용이 덮이지 않도록 합니다.
      */
-    read_size = fread(buffer, 1, 1, file);
+    {
+        char probe;
+        read_size = fread(&probe, 1, 1, file);
+    }
     if (read_size > 0) {
         fclose(file);
         snprintf(error->message, sizeof(error->message), "SQL 파일이 너무 큽니다.");

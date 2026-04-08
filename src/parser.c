@@ -32,6 +32,9 @@ static const Token *current_token(ParserState *state)
 static const Token *previous_token(ParserState *state)
 {
     /* 직전에 소비한 토큰을 돌려줍니다. */
+    if (state->position == 0) {
+        return &state->tokens->items[0];
+    }
     return &state->tokens->items[state->position - 1];
 }
 
@@ -312,10 +315,7 @@ static int parse_select_statement(ParserState *state, Statement *statement, Erro
         return 0;
     }
 
-    return parse_identifier(state,
-                            select_statement->table_name,
-                            &select_statement->table_location,
-                            error);
+    return parse_identifier(state, select_statement->table_name, NULL, error);
 }
 
 static int parse_statement(ParserState *state, Statement *statement, ErrorInfo *error)
@@ -375,16 +375,3 @@ int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error
     return 1;
 }
 
-const char *statement_type_name(StatementType type)
-{
-    /* 디버깅/오류 메시지용 문장 종류 문자열입니다. */
-    if (type == STATEMENT_INSERT) {
-        return "INSERT";
-    }
-
-    if (type == STATEMENT_SELECT) {
-        return "SELECT";
-    }
-
-    return "UNKNOWN";
-}

@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "sqlproc.h"
@@ -160,6 +159,15 @@ static int ensure_data_file(const AppConfig *config,
             return 0;
         }
 
+        {
+            size_t line_len = strlen(line);
+            if (line_len == sizeof(line) - 1 && line[line_len - 1] != '\n' && !feof(file)) {
+                fclose(file);
+                set_file_error(error, "기존 데이터 파일 헤더 행이 너무 깁니다.");
+                return 0;
+            }
+        }
+
         if (!parse_csv_line(line, header_values, &header_count)) {
             fclose(file);
             set_file_error(error, "기존 데이터 파일 헤더 형식이 잘못되었습니다.");
@@ -236,7 +244,7 @@ static int parse_csv_line(const char *line,
         }
 
         if (line[i] == '"') {
-            if (in_quotes && line[i + 1] == '"') {
+            if (in_quotes && line[i + 1] != '\0' && line[i + 1] == '"') {
                 if (text_index >= SQLPROC_MAX_VALUE_LEN - 1) {
                     return 0;
                 }
@@ -500,6 +508,15 @@ static int execute_select(const AppConfig *config,
     }
 
     {
+        size_t line_len = strlen(line);
+        if (line_len == sizeof(line) - 1 && line[line_len - 1] != '\n' && !feof(file)) {
+            fclose(file);
+            set_file_error(error, "CSV 헤더 행이 너무 깁니다.");
+            return 0;
+        }
+    }
+
+    {
         char header_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN];
         int header_count;
         int i;
@@ -530,6 +547,15 @@ static int execute_select(const AppConfig *config,
     while (fgets(line, sizeof(line), file) != NULL) {
         int value_count;
         int i;
+
+        {
+            size_t line_len = strlen(line);
+            if (line_len == sizeof(line) - 1 && line[line_len - 1] != '\n' && !feof(file)) {
+                fclose(file);
+                set_file_error(error, "CSV 행이 너무 깁니다.");
+                return 0;
+            }
+        }
 
         memset(values, 0, sizeof(values));
 

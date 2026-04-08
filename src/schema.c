@@ -121,6 +121,11 @@ int load_table_schema(const char *schema_dir,
         to_lowercase_copy(lower_name, sizeof(lower_name), entry);
         to_lowercase_copy(lower_type, sizeof(lower_type), colon + 1);
 
+        if (lower_name[0] == '\0') {
+            set_error(error, "스키마 컬럼 이름이 비어 있습니다.");
+            return 0;
+        }
+
         if (!parse_data_type(lower_type, &schema->columns[schema->column_count].type)) {
             set_error(error, "지원하지 않는 스키마 타입입니다.");
             return 0;

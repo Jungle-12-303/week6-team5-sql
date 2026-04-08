@@ -274,7 +274,8 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
         }
 
         if (isdigit((unsigned char)sql_text[index]) ||
-            (sql_text[index] == '-' && isdigit((unsigned char)sql_text[index + 1]))) {
+            (sql_text[index] == '-' && sql_text[index + 1] != '\0' &&
+             isdigit((unsigned char)sql_text[index + 1]))) {
             if (!read_number(sql_text, &index, line, column, tokens, error)) {
                 return 0;
             }
@@ -304,64 +305,3 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
     return append_token(tokens, TOKEN_EOF, "", line, column, error);
 }
 
-const char *token_type_name(TokenType type)
-{
-    /* 디버깅과 테스트에서 읽기 쉬운 토큰 이름 문자열입니다. */
-    if (type == TOKEN_EOF) {
-        return "EOF";
-    }
-
-    if (type == TOKEN_IDENTIFIER) {
-        return "IDENTIFIER";
-    }
-
-    if (type == TOKEN_NUMBER) {
-        return "NUMBER";
-    }
-
-    if (type == TOKEN_STRING) {
-        return "STRING";
-    }
-
-    if (type == TOKEN_COMMA) {
-        return "COMMA";
-    }
-
-    if (type == TOKEN_SEMICOLON) {
-        return "SEMICOLON";
-    }
-
-    if (type == TOKEN_LPAREN) {
-        return "LPAREN";
-    }
-
-    if (type == TOKEN_RPAREN) {
-        return "RPAREN";
-    }
-
-    if (type == TOKEN_STAR) {
-        return "STAR";
-    }
-
-    if (type == TOKEN_KEYWORD_INSERT) {
-        return "INSERT";
-    }
-
-    if (type == TOKEN_KEYWORD_INTO) {
-        return "INTO";
-    }
-
-    if (type == TOKEN_KEYWORD_VALUES) {
-        return "VALUES";
-    }
-
-    if (type == TOKEN_KEYWORD_SELECT) {
-        return "SELECT";
-    }
-
-    if (type == TOKEN_KEYWORD_FROM) {
-        return "FROM";
-    }
-
-    return "UNKNOWN";
-}

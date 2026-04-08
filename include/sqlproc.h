@@ -129,7 +129,6 @@ typedef struct {
 /* SELECT 문 구조체입니다. */
 typedef struct {
     char table_name[SQLPROC_MAX_NAME_LEN];
-    SourceLocation table_location;
     int select_all;
     int column_count;
     char column_names[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_NAME_LEN];
@@ -171,8 +170,5 @@ int load_table_schema(const char *schema_dir,
 /* executor.c — CSV 파일 읽기/쓰기 실행 */
 int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error);
 
-/* 디버깅/오류 메시지용 문자열 변환 함수입니다. */
-const char *statement_type_name(StatementType type);
-const char *token_type_name(TokenType type);
 
 #endif
