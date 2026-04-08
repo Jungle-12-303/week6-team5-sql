@@ -1,6 +1,6 @@
 # `week6-team5-sql`
 
-> SQL 문자열을 토큰, 구조체, CSV 입출력으로 연결한 C99 기반 미니 SQL 처리기
+> SQL 처리 과정을 가장 작은 범위로 압축해, 내부 흐름이 보이도록 만든 교육용 SQL 처리기
 
 ## 한눈에 보기
 
@@ -20,9 +20,13 @@ flowchart LR
     A["SQL File"] --> B["Tokenizer"]
     B --> C["Parser"]
     C --> D["Executor"]
-    D --> E["CSV"]
-    D --> F["Schema"]
+    D -->|"storage_append_row()"| E["storage.c"]
+    D -->|"storage_print_rows()"| E
+    E --> F["CSV File"]
+    E --> G["Schema File"]
 ```
+
+executor.c는 SQL 로직(검증·배치)만 담당하고, 파일 읽기/쓰기는 storage.c에 완전히 위임합니다.
 
 ## 실행 흐름
 
@@ -33,7 +37,8 @@ flowchart LR
     C --> D["tokenizer.c"]
     D --> E["parser.c"]
     E --> F["executor.c"]
-    F --> G["schema.c / CSV"]
+    F --> G["storage.c"]
+    G --> H["schema.c / CSV"]
 ```
 
 ## 핵심 구조체 관계도
@@ -63,6 +68,24 @@ SELECT name, age FROM users;
 
 ## 시연 예시
 
+```bash
+./build/sqlproc \
+  --schema-dir ./examples/schemas \
+  --data-dir /tmp/demo-data \
+  ./examples/demo.sql
+```
+
+```text
+id      name    age
+20      yoon    100
+2       lee     30
+3       park    40
+id      name
+20      yoon
+2       lee
+3       park
+```
+
 ## 우리 팀의 포인트
 
 ### 1. tokenizer와 parser를 분리해 오류를 단계별로 설명
@@ -78,26 +101,8 @@ SELECT name, age FROM users;
 ### 2. 오류 위치를 함께 출력
 
 ```text
-<<<<<<< HEAD
-include/
-  sqlproc.h
-src/
-  app.c
-  tokenizer.c
-  parser.c
-  schema.c
-  storage.c
-  executor.c
-tests/
-  test_runner.c
-examples/
-  demo.sql
-  schemas/users.schema
-docs/session-logs/
-=======
 오류: 지원하지 않는 문자를 찾았습니다. (line 1, column 8)
 오류: FROM 키워드가 필요합니다. (line 1, column 13)
->>>>>>> 7874cf3 (docs : README.md 내용 보완)
 ```
 
 ### 3. 스키마 기반으로 컬럼 순서와 타입을 검증
@@ -110,6 +115,25 @@ id:int,name:string,age:int
 - `int`, `string` 타입 검증
 - 컬럼 목록이 바뀌어도 이름 기준으로 재배치
 
+### 4. executor와 storage를 분리해 역할을 명확히 구분
+
+```mermaid
+flowchart LR
+    subgraph executor["executor.c — SQL 로직"]
+        E1["타입·이름 검증"]
+        E2["컬럼 순서 재배치"]
+    end
+    subgraph storage["storage.c — 파일 입출력"]
+        S1["CSV 헤더 생성·검증"]
+        S2["행 읽기·쓰기"]
+    end
+    executor -->|"두 함수로만 연결"| storage
+```
+
+- `storage_append_row()` — INSERT 시 CSV에 한 행 추가
+- `storage_print_rows()` — SELECT 시 해당 컬럼만 출력
+- storage.c를 교체해도 executor.c를 건드릴 필요가 없음
+
 ## 협업과 회고
 
 | 주제 | 내용 |
@@ -120,29 +144,26 @@ id:int,name:string,age:int
 
 ## 한 줄 정리
 
-<<<<<<< HEAD
+> `week6-team5-sql`은 SQL 처리 과정을 가장 작은 범위로 압축해, 내부 흐름이 보이도록 만든 교육용 SQL 처리기입니다.
+
+## CSV 저장 규칙
+
 - 첫 줄은 항상 헤더입니다.
 - 첫 `INSERT` 때 파일이 없으면 헤더를 자동으로 만듭니다.
-
-## 실행 흐름
-
-프로그램은 아래 순서로 동작합니다.
-
-1. SQL 파일에서 문장을 읽습니다.
-2. 토큰으로 나눕니다.
-3. 수동 파서로 SQL 문장 구조체를 만듭니다.
-4. 실행기가 문장 종류를 해석하고 스토리지 계층에 CSV 입출력을 맡깁니다.
+- 스키마와 헤더가 다르면 오류를 반환하고 실행을 중단합니다.
 
 ## 초심자에게 중요한 코드 읽기 포인트
 
 - [src/parser.c](src/parser.c)
   `INSERT`, `SELECT`를 수동 파싱합니다.
+- [src/executor.c](src/executor.c)
+  문장 구조체를 검증하고 스토리지 호출로 연결합니다.
 - [src/storage.c](src/storage.c)
   CSV 경로, 헤더, 행 저장/출력을 담당합니다.
-- [src/executor.c](src/executor.c)
-  문장 구조체를 해석해 스토리지 호출로 연결합니다.
 - [tests/test_runner.c](tests/test_runner.c)
   기능별 테스트 흐름을 한 파일에서 따라갈 수 있습니다.
+- [docs/storage-executor.md](docs/storage-executor.md)
+  executor.c · storage.c의 함수 흐름을 초심자용으로 정리한 문서입니다.
 
 ## Git 브랜치와 GitHub 절차
 
@@ -169,6 +190,4 @@ id:int,name:string,age:int
 - `INSERT` 파서 (컬럼 목록 있음·없음)
 - 빈 SQL 파일 오류
 - CSV 기반 `INSERT`와 `SELECT` 통합 실행
-=======
-> `week6-team5-sql`은 SQL 처리 과정을 가장 작은 범위로 압축해, 내부 흐름이 보이도록 만든 교육용 SQL 처리기입니다.
->>>>>>> 7874cf3 (docs : README.md 내용 보완)
+- `storage_print_rows()` 파일 없음·헤더 불일치 케이스
