@@ -351,7 +351,7 @@ CSV 한 줄을 컬럼 배열로 분해합니다. 큰따옴표 안의 쉼표는 �
 flowchart TD
     START["문자 하나씩 순회"]
     QC{"큰따옴표?"}
-    TQ{"연속 두 따옴표<br/>(\"\"\")"}
+    TQ["연속 두 따옴표<br/>(&quot;&quot;&quot;)"]
     ESCAPE["따옴표 문자 저장"]
     TOGGLE["in_quotes 반전"]
     CM{"쉼표<br/>AND not in_quotes?"}
@@ -388,20 +388,21 @@ flowchart TD
     START["텍스트 스캔"]
     NQ{"쉼표/따옴표/개행<br/>포함?"}
     PLAIN["그대로 fputs()"]
-    OPEN["'\"' 출력"]
+    OPEN["'&quot;' 출력"]
     LOOP["문자 순회"]
-    DQ{"'\"'?"}
-    ESC["'\"' 한 번 더 출력"]
+    DQ{"'&quot;'?"}
+    ESC["'&quot;' 한 번 더 출력"]
     CHAR["문자 출력"]
-    CLOSE["'\"' 출력"]
+    CLOSE["'&quot;' 출력"]
     END["완료"]
 
     START --> NQ
     NQ -->|"없음"| PLAIN --> END
     NQ -->|"있음"| OPEN --> LOOP
     LOOP --> DQ
-    DQ -->|"예"| ESC --> CHAR --> LOOP
-    DQ -->|"아니오"| CHAR --> LOOP
+    DQ -->|"예"| ESC --> CHAR
+    DQ -->|"아니오"| CHAR
+    CHAR --> LOOP
     LOOP -->|"끝"| CLOSE --> END
 ```
 
