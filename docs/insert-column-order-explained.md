@@ -32,11 +32,12 @@ flowchart TD
     A["SQL 문자열<br/>INSERT INTO users (age, id, name) VALUES (100, 20, 'yoon');"]
     B["tokenizer.c<br/>문자열을 토큰으로 분해"]
     C["parser.c<br/>INSERT 구조체 생성"]
-    D["executor.c<br/>컬럼 이름을 스키마 순서로 재배치"]
-    E["storage.c<br/>CSV 헤더 확인 후 행 추가"]
-    F["users.csv<br/>20,yoon,100 저장"]
+    D["schema.c<br/>users.schema 파일에서 스키마 로드"]
+    E["executor.c<br/>컬럼 이름을 스키마 순서로 재배치"]
+    F["storage.c<br/>CSV 헤더 확인 후 행 추가"]
+    G["users.csv<br/>20,yoon,100 저장"]
 
-    A --> B --> C --> D --> E --> F
+    A --> B --> C --> D --> E --> F --> G
 ```
 
 ## 2. 파서가 하는 일
@@ -79,7 +80,8 @@ name -> yoon
 
 ## 3. 실행기가 하는 일
 
-실행기에서는 스키마를 읽고, 각 컬럼 이름이 스키마의 몇 번째 컬럼인지 찾습니다.
+실행기에서는 먼저 `schema.c`의 `load_table_schema` 함수를 호출해 `users.schema` 파일을 읽습니다.
+그런 다음 각 컬럼 이름이 스키마의 몇 번째 컬럼인지 찾습니다.
 
 스키마:
 
@@ -131,20 +133,23 @@ index 2 = 100
 스토리지는 아래 일을 합니다.
 
 - `users.csv` 경로를 만든다
-- 파일이 없으면 헤더를 만든다
-- 헤더가 스키마와 같은지 확인한다
+- 파일이 이미 있으면: 첫 번째 줄(헤더)이 스키마와 일치하는지 검증한다
+- 파일이 없으면: 새 파일을 만들고 스키마 기준 헤더를 기록한다
 - 정렬된 한 줄을 CSV에 append 한다
 
 ```mermaid
 sequenceDiagram
     participant U as 사용자 SQL
     participant P as parser.c
+    participant Sc as schema.c
     participant E as executor.c
     participant S as storage.c
     participant C as users.csv
 
     U->>P: INSERT INTO users (age, id, name) VALUES (100, 20, 'yoon');
     P->>E: age->100, id->20, name->yoon
+    E->>Sc: load_table_schema("users")
+    Sc->>E: TableSchema {id, name, age}
     E->>E: 스키마 순서(id,name,age)로 재배치
     E->>S: [20, yoon, 100] 전달
     S->>C: 헤더 확인 후 20,yoon,100 추가
