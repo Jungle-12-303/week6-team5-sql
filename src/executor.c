@@ -179,6 +179,40 @@ static int resolve_selected_columns(const TableSchema *schema,
 
     return 1;
 }
+
+static int validate_where_clause(const TableSchema *schema,
+                                 const WhereClause *where_clause,
+                                 ErrorInfo *error)
+{
+    int i;
+
+    /*
+     * full scan 전에 WHERE 컬럼 존재 여부와 리터럴 타입을 미리 확인합니다.
+     * 실제 행 단위 비교는 storage.c가 맡습니다.
+     */
+    for (i = 0; i < where_clause->count; i++) {
+        int column_index;
+
+        column_index = find_schema_column(schema, where_clause->items[i].column_name);
+        if (column_index < 0) {
+            set_runtime_error(error,
+                              "WHERE 절의 컬럼이 스키마에 없습니다.",
+                              where_clause->items[i].column_location);
+            return 0;
+        }
+
+        if (!validate_literal_type(schema->columns[column_index].type,
+                                   &where_clause->items[i].value)) {
+            set_runtime_error(error,
+                              "WHERE 절 리터럴 타입이 스키마와 맞지 않습니다.",
+                              where_clause->items[i].value.location);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 static int execute_select(const AppConfig *config,
                           const SelectStatement *statement,
                           ErrorInfo *error)
@@ -189,8 +223,8 @@ static int execute_select(const AppConfig *config,
 
     /*
      * SELECT 실행 흐름:
-     * 1. 스키마/선택 컬럼 유효성 확인
-     * 2. 스토리지에 조회 출력 요청
+     * 1. 스키마/선택 컬럼/WHERE 유효성 확인
+     * 2. 스토리지에 full scan 조회 출력 요청
      */
     if (!load_table_schema(config->schema_dir, statement->table_name, &schema, error)) {
         return 0;
@@ -204,7 +238,16 @@ static int execute_select(const AppConfig *config,
         return 0;
     }
 
-    return storage_print_rows(config, &schema, selected_indices, selected_count, error);
+    if (!validate_where_clause(&schema, &statement->where_clause, error)) {
+        return 0;
+    }
+
+    return storage_print_rows(config,
+                              &schema,
+                              selected_indices,
+                              selected_count,
+                              &statement->where_clause,
+                              error);
 }
 
 int execute_program(const AppConfig *config, const SqlProgram *program, ErrorInfo *error)

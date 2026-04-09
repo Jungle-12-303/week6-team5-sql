@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "sqlproc.h"
 
@@ -13,6 +14,16 @@
  */
 
 static int run_sql_text(const AppConfig *config, const char *sql_text, ErrorInfo *error);
+
+static double elapsed_milliseconds(const struct timeval *start, const struct timeval *end)
+{
+    long seconds;
+    long microseconds;
+
+    seconds = end->tv_sec - start->tv_sec;
+    microseconds = end->tv_usec - start->tv_usec;
+    return (double)seconds * 1000.0 + (double)microseconds / 1000.0;
+}
 
 int parse_arguments(int argc, char **argv, AppConfig *config)
 {
@@ -161,19 +172,28 @@ int run_program(const AppConfig *config)
 {
     char sql_text[SQLPROC_MAX_SQL_SIZE];
     ErrorInfo error;
+    struct timeval start_time;
+    struct timeval end_time;
+    double total_elapsed_ms;
+    int exit_code;
+
+    exit_code = 0;
+    gettimeofday(&start_time, NULL);
 
     /*
      * SQL 파일을 읽어 한 번 실행합니다.
      */
     if (!load_sql_file(config->input_path, sql_text, sizeof(sql_text), &error)) {
         print_error(&error);
-        return 1;
-    }
-
-    if (!run_sql_text(config, sql_text, &error)) {
+        exit_code = 1;
+    } else if (!run_sql_text(config, sql_text, &error)) {
         print_error(&error);
-        return 1;
+        exit_code = 1;
     }
 
-    return 0;
+    gettimeofday(&end_time, NULL);
+    total_elapsed_ms = elapsed_milliseconds(&start_time, &end_time);
+    fprintf(stderr, "총 실행 시간: %.3f ms\n", total_elapsed_ms);
+
+    return exit_code;
 }

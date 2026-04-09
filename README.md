@@ -9,7 +9,7 @@
 | 목표      | SQL 실행 흐름을 초심자도 따라갈 수 있게 구현 |
 | 입력      | `.sql` 파일                                  |
 | 출력      | 표준 출력 + `.csv` 파일                      |
-| 지원 문장 | `INSERT`, `SELECT`                           |
+| 지원 문장 | `INSERT`, `SELECT`, `SELECT ... WHERE`      |
 | 저장 방식 | `CSV`                                        |
 | 스키마    | `<table>.schema`                             |
 
@@ -51,26 +51,26 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["SELECT name, age FROM users;"] --> B["[SELECT] [name] [,] [age] [FROM] [users] [;]"]
+    A["SELECT name, age FROM users WHERE age >= 25;"] --> B["[SELECT] [name] [,] [age] [FROM] [users] [WHERE] [age] [>=] [25] [;]"]
 ```
 
 ### 2. `parser.c` - SELECT
 
 ```mermaid
 flowchart LR
-    A["[SELECT] [name] [,] [age] [FROM] [users] [;]"] --> B["Statement<br/>type = SELECT"]
-    B --> C["SelectStatement<br/>table_name = users<br/>select_all = 0<br/>column_names = [name, age]"]
+    A["[SELECT] [name] [,] [age] [FROM] [users] [WHERE] [age] [>=] [25] [;]"] --> B["Statement<br/>type = SELECT"]
+    B --> C["SelectStatement<br/>table_name = users<br/>select_all = 0<br/>column_names = [name, age]<br/>where_clause = [age >= 25]"]
 ```
 
 ### 3. `executor.c` + `storage.c` - SELECT
 
 ```mermaid
 flowchart LR
-    A["SelectStatement<br/>table = users<br/>columns = [name, age]"] --> B["load_table_schema()"]
+    A["SelectStatement<br/>table = users<br/>columns = [name, age]<br/>where = age >= 25"] --> B["load_table_schema()"]
     B --> C["users.schema 확인<br/>id, name, age"]
-    C --> D["resolve_selected_columns()"]
-    D --> E["storage_print_rows()"]
-    E --> F["name age 출력"]
+    C --> D["resolve_selected_columns()<br/>validate_where_clause()"]
+    D --> E["storage_print_rows()<br/>full scan + WHERE 비교"]
+    E --> F["조건에 맞는 행만 출력"]
 ```
 
 ### 4. `parser.c` - INSERT
@@ -101,7 +101,7 @@ flowchart LR
 | `SqlProgram` | 파싱된 SQL 문장 목록 | `parser.c` | `Statement[]` |
 | `Statement` | `INSERT` / `SELECT` 구분 단위 | `parser.c` | `InsertStatement` or `SelectStatement` |
 | `InsertStatement` | 테이블명, 컬럼명[], 값[] | `parser.c` | `LiteralValue[]` |
-| `SelectStatement` | 테이블명, `select_all`, 컬럼명[] | `parser.c` | — |
+| `SelectStatement` | 테이블명, `select_all`, 컬럼명[], `where_clause` | `parser.c` | `Predicate[]` |
 | `TableSchema` | 컬럼 순서·타입 정의 | `schema.c` | `ColumnSchema[]` |
 | `ErrorInfo` | 오류 메시지 + 위치 | 전 단계 공용 | — |
 
@@ -127,6 +127,28 @@ INSERT INTO users VALUES (1, 'kim', 20);
 INSERT INTO users (name, id, age) VALUES ('lee', 2, 30);
 SELECT * FROM users;
 SELECT name, age FROM users;
+SELECT name, age FROM users WHERE age >= 25;
+SELECT * FROM users WHERE age >= 25 AND name = 'lee';
+```
+
+## WHERE 범위
+
+- 현재 `WHERE`는 full scan 방식으로만 동작합니다.
+- 비교 연산자는 `=`, `<`, `<=`, `>`, `>=`를 지원합니다.
+- 조건은 최대 2개까지 `AND`로 연결할 수 있습니다.
+- `OR`와 인덱스 기반 조회는 아직 지원하지 않습니다.
+
+## 실행 시간 출력
+
+- CLI는 SQL 파일 1회 실행이 끝나면 `stderr`에 총 실행 시간을 출력합니다.
+- SELECT 결과는 기존처럼 `stdout`에만 출력되므로 결과 파싱과 성능 로그를 분리할 수 있습니다.
+
+예시:
+
+```text
+name    age
+lee     30
+총 실행 시간: 0.284 ms
 ```
 
 ## 시연 예시
@@ -143,6 +165,8 @@ SELECT * FROM users;
 SELECT name, age FROM users;
 SELECT age, id FROM users;
 ```
+
+`WHERE` 예시는 [examples/where_demo.sql](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/examples/where_demo.sql) 파일로 따로 분리했습니다.
 
 ## 우리 팀의 포인트
 

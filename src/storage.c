@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sqlproc.h"
@@ -300,6 +301,120 @@ static void print_selected_header(const TableSchema *schema,
     fputc('\n', stdout);
 }
 
+static int find_schema_column(const TableSchema *schema, const char *name)
+{
+    int i;
+
+    for (i = 0; i < schema->column_count; i++) {
+        if (strcmp(schema->columns[i].name, name) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int parse_int_text(const char *text, long *value)
+{
+    char *end_pointer;
+
+    if (text[0] == '\0') {
+        return 0;
+    }
+
+    *value = strtol(text, &end_pointer, 10);
+    return *end_pointer == '\0';
+}
+
+static int compare_values(DataType data_type,
+                          const char *row_value,
+                          CompareOperator operator_type,
+                          const LiteralValue *literal)
+{
+    int compare_result;
+
+    /* int는 숫자 비교, string은 문자열 비교로 WHERE 판정을 통일합니다. */
+    compare_result = 0;
+
+    if (data_type == DATA_TYPE_INT) {
+        long left_value;
+        long right_value;
+
+        parse_int_text(row_value, &left_value);
+        parse_int_text(literal->text, &right_value);
+
+        if (left_value < right_value) {
+            compare_result = -1;
+        } else if (left_value > right_value) {
+            compare_result = 1;
+        }
+    } else {
+        compare_result = strcmp(row_value, literal->text);
+    }
+
+    if (operator_type == COMPARE_EQUAL) {
+        return compare_result == 0;
+    }
+
+    if (operator_type == COMPARE_LESS) {
+        return compare_result < 0;
+    }
+
+    if (operator_type == COMPARE_LESS_EQUAL) {
+        return compare_result <= 0;
+    }
+
+    if (operator_type == COMPARE_GREATER) {
+        return compare_result > 0;
+    }
+
+    return compare_result >= 0;
+}
+
+static int row_matches_where(const TableSchema *schema,
+                             char values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
+                             const WhereClause *where_clause,
+                             ErrorInfo *error)
+{
+    int i;
+
+    for (i = 0; i < where_clause->count; i++) {
+        int column_index;
+        long unused_value;
+
+        column_index = find_schema_column(schema, where_clause->items[i].column_name);
+        if (column_index < 0) {
+            set_file_error(error, "WHERE 절 컬럼을 스키마에서 찾을 수 없습니다.");
+            return -1;
+        }
+
+        if (schema->columns[column_index].type == DATA_TYPE_INT) {
+            if (values[column_index][0] == '\0') {
+                return 0;
+            }
+
+            if (!parse_int_text(values[column_index], &unused_value)) {
+                snprintf(error->message,
+                         sizeof(error->message),
+                         "%s",
+                         "정수 컬럼에 숫자가 아닌 값이 저장되어 있습니다.");
+                error->line = where_clause->items[i].column_location.line;
+                error->column = where_clause->items[i].column_location.column;
+                return -1;
+            }
+        }
+
+        if (!compare_values(schema->columns[column_index].type,
+                            values[column_index],
+                            where_clause->items[i].operator_type,
+                            &where_clause->items[i].value)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 int storage_append_row(const AppConfig *config,
                        const TableSchema *schema,
                        char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
@@ -334,6 +449,7 @@ int storage_print_rows(const AppConfig *config,
                        const TableSchema *schema,
                        const int selected_indices[SQLPROC_MAX_COLUMNS],
                        int selected_count,
+                       const WhereClause *where_clause,
                        ErrorInfo *error)
 {
     char path[STORAGE_MAX_PATH_LEN];
@@ -397,6 +513,7 @@ int storage_print_rows(const AppConfig *config,
     while (fgets(line, sizeof(line), file) != NULL) {
         int value_count;
         int i;
+        int match_result;
 
         if (!validate_line_length(line, sizeof(line), file, error, "CSV 행이 너무 깁니다.")) {
             fclose(file);
@@ -415,6 +532,16 @@ int storage_print_rows(const AppConfig *config,
             fclose(file);
             set_file_error(error, "CSV 컬럼 수가 스키마와 맞지 않습니다.");
             return 0;
+        }
+
+        match_result = row_matches_where(schema, values, where_clause, error);
+        if (match_result < 0) {
+            fclose(file);
+            return 0;
+        }
+
+        if (!match_result) {
+            continue;
         }
 
         for (i = 0; i < selected_count; i++) {

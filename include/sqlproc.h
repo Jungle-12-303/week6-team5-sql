@@ -16,6 +16,7 @@
 #define SQLPROC_MAX_NAME_LEN 64
 #define SQLPROC_MAX_VALUE_LEN 64
 #define SQLPROC_MAX_COLUMNS 16
+#define SQLPROC_MAX_PREDICATES 2
 #define SQLPROC_MAX_TOKENS 512
 #define SQLPROC_MAX_STATEMENTS 32
 #define SQLPROC_MAX_ERROR_LEN 256
@@ -37,11 +38,19 @@ typedef enum {
     TOKEN_LPAREN,
     TOKEN_RPAREN,
     TOKEN_STAR,
+    TOKEN_EQUAL,
+    TOKEN_LESS,
+    TOKEN_LESS_EQUAL,
+    TOKEN_GREATER,
+    TOKEN_GREATER_EQUAL,
     TOKEN_KEYWORD_INSERT,
     TOKEN_KEYWORD_INTO,
     TOKEN_KEYWORD_VALUES,
     TOKEN_KEYWORD_SELECT,
-    TOKEN_KEYWORD_FROM
+    TOKEN_KEYWORD_FROM,
+    TOKEN_KEYWORD_WHERE,
+    TOKEN_KEYWORD_AND,
+    TOKEN_KEYWORD_OR
 } TokenType;
 
 /* 파서가 구분하는 최상위 SQL 문장 종류입니다. */
@@ -55,6 +64,15 @@ typedef enum {
     LITERAL_INT,
     LITERAL_STRING
 } LiteralType;
+
+/* WHERE 절이 사용하는 비교 연산자 종류입니다. */
+typedef enum {
+    COMPARE_EQUAL,
+    COMPARE_LESS,
+    COMPARE_LESS_EQUAL,
+    COMPARE_GREATER,
+    COMPARE_GREATER_EQUAL
+} CompareOperator;
 
 /* 파서/실행기 오류가 발생한 SQL 상의 위치입니다. */
 typedef struct {
@@ -102,6 +120,21 @@ typedef struct {
     SourceLocation location;
 } LiteralValue;
 
+/* WHERE 절의 조건 1개입니다. */
+typedef struct {
+    char column_name[SQLPROC_MAX_NAME_LEN];
+    SourceLocation column_location;
+    CompareOperator operator_type;
+    SourceLocation operator_location;
+    LiteralValue value;
+} Predicate;
+
+/* 현재 지원하는 WHERE 절입니다. 최대 2개 조건을 AND로 연결합니다. */
+typedef struct {
+    int count;
+    Predicate items[SQLPROC_MAX_PREDICATES];
+} WhereClause;
+
 /* 스키마의 컬럼 1개 정의입니다. */
 typedef struct {
     char name[SQLPROC_MAX_NAME_LEN];
@@ -134,6 +167,7 @@ typedef struct {
     int column_count;
     char column_names[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_NAME_LEN];
     SourceLocation column_locations[SQLPROC_MAX_COLUMNS];
+    WhereClause where_clause;
 } SelectStatement;
 
 /* SQL 문장 1개입니다. INSERT 또는 SELECT 중 하나를 담습니다. */
@@ -177,6 +211,7 @@ int storage_print_rows(const AppConfig *config,
                        const TableSchema *schema,
                        const int selected_indices[SQLPROC_MAX_COLUMNS],
                        int selected_count,
+                       const WhereClause *where_clause,
                        ErrorInfo *error);
 
 /* executor.c — SQL 문장 실행 흐름 제어 */

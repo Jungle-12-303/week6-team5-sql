@@ -132,6 +132,110 @@ static int parse_literal(ParserState *state, LiteralValue *value, ErrorInfo *err
     return 0;
 }
 
+static int parse_operator(ParserState *state, CompareOperator *operator_type, ErrorInfo *error)
+{
+    /* WHERE 절 비교 연산자를 구조체용 enum으로 바꿉니다. */
+    if (token_matches(state, TOKEN_EQUAL)) {
+        *operator_type = COMPARE_EQUAL;
+        advance_token(state);
+        return 1;
+    }
+
+    if (token_matches(state, TOKEN_LESS)) {
+        *operator_type = COMPARE_LESS;
+        advance_token(state);
+        return 1;
+    }
+
+    if (token_matches(state, TOKEN_LESS_EQUAL)) {
+        *operator_type = COMPARE_LESS_EQUAL;
+        advance_token(state);
+        return 1;
+    }
+
+    if (token_matches(state, TOKEN_GREATER)) {
+        *operator_type = COMPARE_GREATER;
+        advance_token(state);
+        return 1;
+    }
+
+    if (token_matches(state, TOKEN_GREATER_EQUAL)) {
+        *operator_type = COMPARE_GREATER_EQUAL;
+        advance_token(state);
+        return 1;
+    }
+
+    set_error(error, current_token(state), "비교 연산자가 필요합니다.");
+    return 0;
+}
+
+static int parse_predicate(ParserState *state, Predicate *predicate, ErrorInfo *error)
+{
+    /* column operator literal 순서의 WHERE 조건 1개를 읽습니다. */
+    if (!parse_identifier(state, predicate->column_name, &predicate->column_location, error)) {
+        return 0;
+    }
+
+    predicate->operator_location.line = current_token(state)->line;
+    predicate->operator_location.column = current_token(state)->column;
+
+    if (!parse_operator(state, &predicate->operator_type, error)) {
+        return 0;
+    }
+
+    return parse_literal(state, &predicate->value, error);
+}
+
+static int parse_where_clause(ParserState *state, WhereClause *where_clause, ErrorInfo *error)
+{
+    /*
+     * 현재 범위의 WHERE 절은 비교 조건 1~2개와 AND만 지원합니다.
+     * OR는 명시적으로 거절해 다음 단계의 full scan 범위를 분명히 합니다.
+     */
+    memset(where_clause, 0, sizeof(*where_clause));
+
+    if (!token_matches(state, TOKEN_KEYWORD_WHERE)) {
+        return 1;
+    }
+
+    advance_token(state);
+
+    if (!parse_predicate(state, &where_clause->items[0], error)) {
+        return 0;
+    }
+
+    where_clause->count = 1;
+
+    if (token_matches(state, TOKEN_KEYWORD_OR)) {
+        set_error(error, current_token(state), "OR 조건은 지원하지 않습니다.");
+        return 0;
+    }
+
+    if (!token_matches(state, TOKEN_KEYWORD_AND)) {
+        return 1;
+    }
+
+    advance_token(state);
+
+    if (!parse_predicate(state, &where_clause->items[1], error)) {
+        return 0;
+    }
+
+    where_clause->count = 2;
+
+    if (token_matches(state, TOKEN_KEYWORD_AND)) {
+        set_error(error, current_token(state), "WHERE 조건은 최대 2개까지만 지원합니다.");
+        return 0;
+    }
+
+    if (token_matches(state, TOKEN_KEYWORD_OR)) {
+        set_error(error, current_token(state), "OR 조건은 지원하지 않습니다.");
+        return 0;
+    }
+
+    return 1;
+}
+
 static int parse_value_list(ParserState *state,
                             LiteralValue values[SQLPROC_MAX_COLUMNS],
                             int *value_count,
@@ -271,7 +375,7 @@ static int parse_select_statement(ParserState *state, Statement *statement, Erro
 {
     SelectStatement *select_statement;
 
-    /* SELECT * 또는 SELECT col1, col2 형태를 읽고 뒤에 FROM을 연결합니다. */
+    /* SELECT ... FROM ... [WHERE ...] 형태를 읽습니다. */
     select_statement = &statement->select_statement;
     memset(select_statement, 0, sizeof(*select_statement));
     statement->type = STATEMENT_SELECT;
@@ -315,7 +419,11 @@ static int parse_select_statement(ParserState *state, Statement *statement, Erro
         return 0;
     }
 
-    return parse_identifier(state, select_statement->table_name, NULL, error);
+    if (!parse_identifier(state, select_statement->table_name, NULL, error)) {
+        return 0;
+    }
+
+    return parse_where_clause(state, &select_statement->where_clause, error);
 }
 
 static int parse_statement(ParserState *state, Statement *statement, ErrorInfo *error)
@@ -374,4 +482,3 @@ int parse_program(const TokenList *tokens, SqlProgram *program, ErrorInfo *error
 
     return 1;
 }
-

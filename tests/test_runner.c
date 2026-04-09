@@ -19,11 +19,16 @@
 static int ensure_directory(const char *path);
 static int write_text_file(const char *path, const char *text);
 static int file_contains_text(const char *path, const char *needle);
+static int capture_run_program_streams(const AppConfig *config,
+                                       const char *output_path,
+                                       const char *error_path,
+                                       int *result);
 static int capture_run_program(const AppConfig *config, const char *output_path);
 static int capture_storage_print_rows(const AppConfig *config,
                                       const TableSchema *schema,
                                       const int selected_indices[SQLPROC_MAX_COLUMNS],
                                       int selected_count,
+                                      const WhereClause *where_clause,
                                       const char *output_path,
                                       ErrorInfo *error);
 static int create_temp_workspace(char *base_path,
@@ -110,6 +115,36 @@ static int test_tokenize_select(void)
     return tokens.items[5].type == TOKEN_EOF;
 }
 
+static int test_tokenize_where_select(void)
+{
+    TokenList tokens;
+    ErrorInfo error;
+
+    if (!tokenize_sql("SELECT * FROM users WHERE age >= 20 AND name = 'kim';",
+                      &tokens,
+                      &error)) {
+        return 0;
+    }
+
+    if (tokens.items[4].type != TOKEN_KEYWORD_WHERE) {
+        return 0;
+    }
+
+    if (tokens.items[6].type != TOKEN_GREATER_EQUAL) {
+        return 0;
+    }
+
+    if (tokens.items[8].type != TOKEN_KEYWORD_AND) {
+        return 0;
+    }
+
+    if (tokens.items[10].type != TOKEN_EQUAL) {
+        return 0;
+    }
+
+    return tokens.items[11].type == TOKEN_STRING;
+}
+
 static int test_parse_insert_statement(void)
 {
     TokenList tokens;
@@ -186,6 +221,81 @@ static int test_parse_insert_without_column_list(void)
     }
 
     return strcmp(program.items[0].insert_statement.values[1].text, "park") == 0;
+}
+
+static int test_parse_select_where_statement(void)
+{
+    TokenList tokens;
+    SqlProgram program;
+    ErrorInfo error;
+
+    if (!tokenize_sql("SELECT name FROM users WHERE age >= 20 AND id = 1;",
+                      &tokens,
+                      &error)) {
+        return 0;
+    }
+
+    if (!parse_program(&tokens, &program, &error)) {
+        return 0;
+    }
+
+    if (program.items[0].type != STATEMENT_SELECT) {
+        return 0;
+    }
+
+    if (program.items[0].select_statement.where_clause.count != 2) {
+        return 0;
+    }
+
+    if (program.items[0].select_statement.where_clause.items[0].operator_type !=
+        COMPARE_GREATER_EQUAL) {
+        return 0;
+    }
+
+    if (program.items[0].select_statement.where_clause.items[1].operator_type !=
+        COMPARE_EQUAL) {
+        return 0;
+    }
+
+    return strcmp(program.items[0].select_statement.where_clause.items[1].column_name, "id") == 0;
+}
+
+static int test_parse_where_limit_fail(void)
+{
+    TokenList tokens;
+    SqlProgram program;
+    ErrorInfo error;
+
+    if (!tokenize_sql("SELECT * FROM users WHERE age >= 20 AND id = 1 AND name = 'kim';",
+                      &tokens,
+                      &error)) {
+        return 0;
+    }
+
+    if (parse_program(&tokens, &program, &error)) {
+        return 0;
+    }
+
+    return strstr(error.message, "최대 2개") != NULL;
+}
+
+static int test_parse_where_or_fail(void)
+{
+    TokenList tokens;
+    SqlProgram program;
+    ErrorInfo error;
+
+    if (!tokenize_sql("SELECT * FROM users WHERE age >= 20 OR id = 1;",
+                      &tokens,
+                      &error)) {
+        return 0;
+    }
+
+    if (parse_program(&tokens, &program, &error)) {
+        return 0;
+    }
+
+    return strstr(error.message, "OR 조건은 지원하지 않습니다.") != NULL;
 }
 
 static int test_run_program_success(void)
@@ -273,7 +383,7 @@ static int write_text_file(const char *path, const char *text)
 
 static int file_contains_text(const char *path, const char *needle)
 {
-    char buffer[2048];
+    char buffer[4096];
     FILE *file;
     size_t size;
 
@@ -289,36 +399,102 @@ static int file_contains_text(const char *path, const char *needle)
     return strstr(buffer, needle) != NULL;
 }
 
+static int capture_run_program_streams(const AppConfig *config,
+                                       const char *output_path,
+                                       const char *error_path,
+                                       int *result)
+{
+    FILE *output_file;
+    FILE *error_file;
+    int saved_stdout;
+    int saved_stderr;
+    int run_result;
+
+    /*
+     * run_program의 stdout/stderr를 각각 파일로 받아
+     * 결과 표와 오류/실행 시간 메시지를 분리 검증할 때 사용합니다.
+     */
+    output_file = fopen(output_path, "wb");
+    if (output_file == NULL) {
+        return 0;
+    }
+
+    error_file = NULL;
+    if (error_path != NULL) {
+        error_file = fopen(error_path, "wb");
+        if (error_file == NULL) {
+            fclose(output_file);
+            return 0;
+        }
+    }
+
+    fflush(stdout);
+    fflush(stderr);
+    saved_stdout = dup(STDOUT_FILENO);
+    saved_stderr = dup(STDERR_FILENO);
+    if (saved_stdout < 0) {
+        if (error_file != NULL) {
+            fclose(error_file);
+        }
+        fclose(output_file);
+        return 0;
+    }
+
+    if (saved_stderr < 0) {
+        close(saved_stdout);
+        if (error_file != NULL) {
+            fclose(error_file);
+        }
+        fclose(output_file);
+        return 0;
+    }
+
+    if (dup2(fileno(output_file), STDOUT_FILENO) < 0) {
+        close(saved_stdout);
+        close(saved_stderr);
+        if (error_file != NULL) {
+            fclose(error_file);
+        }
+        fclose(output_file);
+        return 0;
+    }
+
+    if (error_file != NULL && dup2(fileno(error_file), STDERR_FILENO) < 0) {
+        dup2(saved_stdout, STDOUT_FILENO);
+        close(saved_stdout);
+        close(saved_stderr);
+        fclose(error_file);
+        fclose(output_file);
+        return 0;
+    }
+
+    run_result = run_program(config);
+    fflush(stdout);
+    fflush(stderr);
+    dup2(saved_stdout, STDOUT_FILENO);
+    dup2(saved_stderr, STDERR_FILENO);
+    close(saved_stdout);
+    close(saved_stderr);
+    if (error_file != NULL) {
+        fclose(error_file);
+    }
+    fclose(output_file);
+
+    if (result != NULL) {
+        *result = run_result;
+    }
+
+    return 1;
+}
+
 static int capture_run_program(const AppConfig *config, const char *output_path)
 {
-    FILE *file;
-    int saved_stdout;
     int result;
 
-    /* run_program의 stdout을 파일로 받아 SELECT 결과를 검증할 때 사용합니다. */
-    file = fopen(output_path, "wb");
-    if (file == NULL) {
+    if (!capture_run_program_streams(config, output_path, "/dev/null", &result)) {
         return 0;
     }
 
-    fflush(stdout);
-    saved_stdout = dup(STDOUT_FILENO);
-    if (saved_stdout < 0) {
-        fclose(file);
-        return 0;
-    }
-
-    if (dup2(fileno(file), STDOUT_FILENO) < 0) {
-        close(saved_stdout);
-        fclose(file);
-        return 0;
-    }
-
-    result = run_program(config);
-    fflush(stdout);
-    dup2(saved_stdout, STDOUT_FILENO);
-    close(saved_stdout);
-    fclose(file);
     return result == 0;
 }
 
@@ -326,6 +502,7 @@ static int capture_storage_print_rows(const AppConfig *config,
                                       const TableSchema *schema,
                                       const int selected_indices[SQLPROC_MAX_COLUMNS],
                                       int selected_count,
+                                      const WhereClause *where_clause,
                                       const char *output_path,
                                       ErrorInfo *error)
 {
@@ -352,7 +529,12 @@ static int capture_storage_print_rows(const AppConfig *config,
         return 0;
     }
 
-    result = storage_print_rows(config, schema, selected_indices, selected_count, error);
+    result = storage_print_rows(config,
+                                schema,
+                                selected_indices,
+                                selected_count,
+                                where_clause,
+                                error);
     fflush(stdout);
     dup2(saved_stdout, STDOUT_FILENO);
     close(saved_stdout);
@@ -450,11 +632,312 @@ static int test_insert_and_select_execution(void)
     return file_contains_text(output_path, "name\tage\nkim\t20\nlee\t30\n");
 }
 
+static int test_insert_and_select_where_execution(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char data_path[256];
+    char sql_path[256];
+    char output_path[256];
+    char schema_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_insert_select_where_test_")) {
+        return 0;
+    }
+
+    snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(sql_path,
+                         "INSERT INTO users VALUES (1, 'kim', 20);"
+                         "INSERT INTO users VALUES (2, 'lee', 30);"
+                         "INSERT INTO users VALUES (3, 'lee', 24);"
+                         "SELECT name, age FROM users WHERE age >= 25 AND name = 'lee';\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", sql_path);
+
+    if (!capture_run_program(&config, output_path)) {
+        return 0;
+    }
+
+    if (!file_contains_text(data_path, "id,name,age\n1,kim,20\n2,lee,30\n3,lee,24\n")) {
+        return 0;
+    }
+
+    if (!file_contains_text(output_path, "name\tage\nlee\t30\n")) {
+        return 0;
+    }
+
+    return !file_contains_text(output_path, "lee\t24\n");
+}
+
+static int test_storage_print_rows_where_without_data_file(void)
+{
+    AppConfig config;
+    TableSchema schema;
+    ErrorInfo error;
+    WhereClause where_clause;
+    int selected_indices[SQLPROC_MAX_COLUMNS];
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+    char output_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_storage_where_header_only_")) {
+        return 0;
+    }
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    memset(&schema, 0, sizeof(schema));
+    memset(&error, 0, sizeof(error));
+    memset(&where_clause, 0, sizeof(where_clause));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+
+    if (!load_table_schema(config.schema_dir, "users", &schema, &error)) {
+        return 0;
+    }
+
+    where_clause.count = 1;
+    snprintf(where_clause.items[0].column_name,
+             sizeof(where_clause.items[0].column_name),
+             "%s",
+             "age");
+    where_clause.items[0].operator_type = COMPARE_GREATER_EQUAL;
+    where_clause.items[0].column_location.line = 1;
+    where_clause.items[0].column_location.column = 27;
+    where_clause.items[0].value.type = LITERAL_INT;
+    snprintf(where_clause.items[0].value.text,
+             sizeof(where_clause.items[0].value.text),
+             "%s",
+             "20");
+
+    selected_indices[0] = 0;
+    selected_indices[1] = 2;
+
+    if (!capture_storage_print_rows(&config,
+                                    &schema,
+                                    selected_indices,
+                                    2,
+                                    &where_clause,
+                                    output_path,
+                                    &error)) {
+        return 0;
+    }
+
+    return file_contains_text(output_path, "id\tage\n");
+}
+
+static int test_run_program_reports_elapsed_time(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char sql_path[256];
+    char output_path[256];
+    char error_path[256];
+    char schema_path[256];
+    int result;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_elapsed_time_test_")) {
+        return 0;
+    }
+
+    snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(error_path, sizeof(error_path), "%s/error.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(sql_path,
+                         "INSERT INTO users VALUES (1, 'kim');"
+                         "SELECT * FROM users WHERE id >= 1;\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", sql_path);
+
+    if (!capture_run_program_streams(&config, output_path, error_path, &result)) {
+        return 0;
+    }
+
+    if (result != 0) {
+        return 0;
+    }
+
+    if (!file_contains_text(output_path, "id\tname\n1\tkim\n")) {
+        return 0;
+    }
+
+    return file_contains_text(error_path, "총 실행 시간: ");
+}
+
+static int test_where_type_mismatch_fail(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char sql_path[256];
+    char output_path[256];
+    char error_path[256];
+    char schema_path[256];
+    char data_path[256];
+    int result;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_where_type_fail_")) {
+        return 0;
+    }
+
+    snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(error_path, sizeof(error_path), "%s/error.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(data_path, "id,name,age\n1,kim,20\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(sql_path, "SELECT * FROM users WHERE age = 'kim';\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", sql_path);
+
+    if (!capture_run_program_streams(&config, output_path, error_path, &result)) {
+        return 0;
+    }
+
+    if (result == 0) {
+        return 0;
+    }
+
+    return file_contains_text(error_path, "WHERE 절 리터럴 타입이 스키마와 맞지 않습니다.");
+}
+
+static int test_where_invalid_int_data_fail(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char sql_path[256];
+    char output_path[256];
+    char error_path[256];
+    char schema_path[256];
+    char data_path[256];
+    int result;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_where_bad_int_data_")) {
+        return 0;
+    }
+
+    snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(error_path, sizeof(error_path), "%s/error.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(data_path, "id,name,age\n1,kim,twenty\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(sql_path, "SELECT * FROM users WHERE age >= 20;\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", sql_path);
+
+    if (!capture_run_program_streams(&config, output_path, error_path, &result)) {
+        return 0;
+    }
+
+    if (result == 0) {
+        return 0;
+    }
+
+    return file_contains_text(error_path, "정수 컬럼에 숫자가 아닌 값이 저장되어 있습니다.");
+}
+
 static int test_storage_print_rows_without_data_file(void)
 {
     AppConfig config;
     TableSchema schema;
     ErrorInfo error;
+    WhereClause where_clause;
     int selected_indices[SQLPROC_MAX_COLUMNS];
     char base_dir[256];
     char schema_dir[256];
@@ -482,6 +965,7 @@ static int test_storage_print_rows_without_data_file(void)
     memset(&config, 0, sizeof(config));
     memset(&schema, 0, sizeof(schema));
     memset(&error, 0, sizeof(error));
+    memset(&where_clause, 0, sizeof(where_clause));
     snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
     snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
 
@@ -496,6 +980,7 @@ static int test_storage_print_rows_without_data_file(void)
                                     &schema,
                                     selected_indices,
                                     2,
+                                    &where_clause,
                                     output_path,
                                     &error)) {
         return 0;
@@ -509,6 +994,7 @@ static int test_storage_print_rows_header_mismatch(void)
     AppConfig config;
     TableSchema schema;
     ErrorInfo error;
+    WhereClause where_clause;
     int selected_indices[SQLPROC_MAX_COLUMNS];
     char base_dir[256];
     char schema_dir[256];
@@ -540,6 +1026,7 @@ static int test_storage_print_rows_header_mismatch(void)
     memset(&config, 0, sizeof(config));
     memset(&schema, 0, sizeof(schema));
     memset(&error, 0, sizeof(error));
+    memset(&where_clause, 0, sizeof(where_clause));
     snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
     snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
 
@@ -550,7 +1037,7 @@ static int test_storage_print_rows_header_mismatch(void)
     selected_indices[0] = 0;
     selected_indices[1] = 1;
 
-    if (storage_print_rows(&config, &schema, selected_indices, 2, &error)) {
+    if (storage_print_rows(&config, &schema, selected_indices, 2, &where_clause, &error)) {
         return 0;
     }
 
@@ -574,6 +1061,11 @@ int main(void)
         return 1;
     }
 
+    if (!test_tokenize_where_select()) {
+        fprintf(stderr, "test_tokenize_where_select failed\n");
+        return 1;
+    }
+
     if (!test_parse_insert_statement()) {
         fprintf(stderr, "test_parse_insert_statement failed\n");
         return 1;
@@ -581,6 +1073,21 @@ int main(void)
 
     if (!test_parse_insert_without_column_list()) {
         fprintf(stderr, "test_parse_insert_without_column_list failed\n");
+        return 1;
+    }
+
+    if (!test_parse_select_where_statement()) {
+        fprintf(stderr, "test_parse_select_where_statement failed\n");
+        return 1;
+    }
+
+    if (!test_parse_where_limit_fail()) {
+        fprintf(stderr, "test_parse_where_limit_fail failed\n");
+        return 1;
+    }
+
+    if (!test_parse_where_or_fail()) {
+        fprintf(stderr, "test_parse_where_or_fail failed\n");
         return 1;
     }
 
@@ -599,13 +1106,38 @@ int main(void)
         return 1;
     }
 
+    if (!test_insert_and_select_where_execution()) {
+        fprintf(stderr, "test_insert_and_select_where_execution failed\n");
+        return 1;
+    }
+
     if (!test_storage_print_rows_without_data_file()) {
         fprintf(stderr, "test_storage_print_rows_without_data_file failed\n");
         return 1;
     }
 
+    if (!test_storage_print_rows_where_without_data_file()) {
+        fprintf(stderr, "test_storage_print_rows_where_without_data_file failed\n");
+        return 1;
+    }
+
     if (!test_storage_print_rows_header_mismatch()) {
         fprintf(stderr, "test_storage_print_rows_header_mismatch failed\n");
+        return 1;
+    }
+
+    if (!test_run_program_reports_elapsed_time()) {
+        fprintf(stderr, "test_run_program_reports_elapsed_time failed\n");
+        return 1;
+    }
+
+    if (!test_where_type_mismatch_fail()) {
+        fprintf(stderr, "test_where_type_mismatch_fail failed\n");
+        return 1;
+    }
+
+    if (!test_where_invalid_int_data_fail()) {
+        fprintf(stderr, "test_where_invalid_int_data_fail failed\n");
         return 1;
     }
 
