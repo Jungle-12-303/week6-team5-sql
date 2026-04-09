@@ -118,6 +118,11 @@ int load_table_schema(const char *schema_dir,
 
         *colon = '\0';
 
+        if (strlen(entry) >= SQLPROC_MAX_NAME_LEN) {
+            set_error(error, "스키마 컬럼 이름이 너무 깁니다.");
+            return 0;
+        }
+
         to_lowercase_copy(lower_name, sizeof(lower_name), entry);
         to_lowercase_copy(lower_type, sizeof(lower_type), colon + 1);
 

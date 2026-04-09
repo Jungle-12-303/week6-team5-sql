@@ -33,6 +33,7 @@ static int create_temp_workspace(char *base_path,
                                  char *data_dir,
                                  size_t data_size,
                                  const char *prefix);
+static int parse_sql_text(const char *sql_text, SqlProgram *program, ErrorInfo *error);
 
 static int test_parse_arguments_success(void)
 {
@@ -108,6 +109,22 @@ static int test_tokenize_select(void)
     }
 
     return tokens.items[5].type == TOKEN_EOF;
+}
+
+static int test_tokenize_multiline_string_fail(void)
+{
+    TokenList tokens;
+    ErrorInfo error;
+
+    if (tokenize_sql("INSERT INTO users VALUES (1, 'hello\nworld', 20);", &tokens, &error)) {
+        return 0;
+    }
+
+    if (strstr(error.message, "줄바꿈") == NULL) {
+        return 0;
+    }
+
+    return error.line == 1 && error.column == 36;
 }
 
 static int test_parse_insert_statement(void)
@@ -380,6 +397,17 @@ static int create_temp_workspace(char *base_path,
     return ensure_directory(schema_dir) && ensure_directory(data_dir);
 }
 
+static int parse_sql_text(const char *sql_text, SqlProgram *program, ErrorInfo *error)
+{
+    TokenList tokens;
+
+    if (!tokenize_sql(sql_text, &tokens, error)) {
+        return 0;
+    }
+
+    return parse_program(&tokens, program, error);
+}
+
 static int test_parse_empty_sql_fail(void)
 {
     TokenList tokens;
@@ -557,6 +585,182 @@ static int test_storage_print_rows_header_mismatch(void)
     return strstr(error.message, "CSV 헤더 순서가 스키마와 다릅니다.") != NULL;
 }
 
+static int test_insert_int_overflow_fail(void)
+{
+    AppConfig config;
+    SqlProgram program;
+    ErrorInfo error;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_int_overflow_")) {
+        return 0;
+    }
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!parse_sql_text("INSERT INTO users VALUES (9999999999999999999999999999999999999999, 'huge', 1);",
+                        &program,
+                        &error)) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+
+    if (execute_program(&config, &program, &error)) {
+        return 0;
+    }
+
+    if (strstr(error.message, "int 범위를 벗어났습니다.") == NULL) {
+        return 0;
+    }
+
+    return error.line == 1 && error.column == 27;
+}
+
+static int test_insert_missing_schema_column_fail(void)
+{
+    AppConfig config;
+    SqlProgram program;
+    ErrorInfo error;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+    char data_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_missing_schema_column_")) {
+        return 0;
+    }
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!parse_sql_text("INSERT INTO users (id, name) VALUES (1, 'kim');",
+                        &program,
+                        &error)) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+
+    if (execute_program(&config, &program, &error)) {
+        return 0;
+    }
+
+    if (strstr(error.message, "모든 컬럼 값이 필요합니다.") == NULL) {
+        return 0;
+    }
+
+    return access(data_path, F_OK) != 0;
+}
+
+static int test_insert_formula_like_string_fail(void)
+{
+    AppConfig config;
+    SqlProgram program;
+    ErrorInfo error;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_formula_string_")) {
+        return 0;
+    }
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!parse_sql_text("INSERT INTO users VALUES (1, '=2+3', 20);", &program, &error)) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+
+    if (execute_program(&config, &program, &error)) {
+        return 0;
+    }
+
+    if (strstr(error.message, "CSV에서 수식으로 해석될 수 없습니다.") == NULL) {
+        return 0;
+    }
+
+    return error.line == 1 && error.column == 30;
+}
+
+static int test_load_schema_long_column_name_fail(void)
+{
+    TableSchema schema;
+    ErrorInfo error;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+    char schema_line[160];
+    char long_name[80];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_long_schema_name_")) {
+        return 0;
+    }
+
+    memset(long_name, 'a', 70);
+    long_name[70] = '\0';
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(schema_line, sizeof(schema_line), "%s:int,name:string\n", long_name);
+    if (!write_text_file(schema_path, schema_line)) {
+        return 0;
+    }
+
+    if (load_table_schema(schema_dir, "users", &schema, &error)) {
+        return 0;
+    }
+
+    return strstr(error.message, "스키마 컬럼 이름이 너무 깁니다.") != NULL;
+}
+
 int main(void)
 {
     if (!test_parse_arguments_success()) {
@@ -571,6 +775,11 @@ int main(void)
 
     if (!test_tokenize_select()) {
         fprintf(stderr, "test_tokenize_select failed\n");
+        return 1;
+    }
+
+    if (!test_tokenize_multiline_string_fail()) {
+        fprintf(stderr, "test_tokenize_multiline_string_fail failed\n");
         return 1;
     }
 
@@ -606,6 +815,26 @@ int main(void)
 
     if (!test_storage_print_rows_header_mismatch()) {
         fprintf(stderr, "test_storage_print_rows_header_mismatch failed\n");
+        return 1;
+    }
+
+    if (!test_insert_int_overflow_fail()) {
+        fprintf(stderr, "test_insert_int_overflow_fail failed\n");
+        return 1;
+    }
+
+    if (!test_insert_missing_schema_column_fail()) {
+        fprintf(stderr, "test_insert_missing_schema_column_fail failed\n");
+        return 1;
+    }
+
+    if (!test_insert_formula_like_string_fail()) {
+        fprintf(stderr, "test_insert_formula_like_string_fail failed\n");
+        return 1;
+    }
+
+    if (!test_load_schema_long_column_name_fail()) {
+        fprintf(stderr, "test_load_schema_long_column_name_fail failed\n");
         return 1;
     }
 

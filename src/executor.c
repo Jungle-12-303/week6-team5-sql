@@ -1,4 +1,7 @@
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sqlproc.h"
@@ -47,6 +50,43 @@ static int validate_literal_type(DataType data_type, const LiteralValue *value)
     return 0;
 }
 
+static int int_literal_in_range(const LiteralValue *value)
+{
+    char *end_ptr;
+    long parsed_value;
+
+    errno = 0;
+    parsed_value = strtol(value->text, &end_ptr, 10);
+    if (errno == ERANGE) {
+        return 0;
+    }
+
+    if (*end_ptr != '\0') {
+        return 0;
+    }
+
+    return parsed_value >= INT_MIN && parsed_value <= INT_MAX;
+}
+
+static int string_literal_is_safe_for_csv(const LiteralValue *value)
+{
+    char first_character;
+
+    /*
+     * CSV를 스프레드시트에서 열었을 때 수식으로 해석될 수 있는
+     * 시작 문자(=, +, -, @)는 문자열 값으로 허용하지 않습니다.
+     */
+    if (value->text[0] == '\0') {
+        return 1;
+    }
+
+    first_character = value->text[0];
+    return first_character != '=' &&
+           first_character != '+' &&
+           first_character != '-' &&
+           first_character != '@';
+}
+
 static int build_insert_row_values(const TableSchema *schema,
                                    const InsertStatement *statement,
                                    char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
@@ -75,6 +115,22 @@ static int build_insert_row_values(const TableSchema *schema,
             if (!validate_literal_type(schema->columns[i].type, &statement->values[i])) {
                 set_runtime_error(error,
                                   "INSERT 값 타입이 스키마와 맞지 않습니다.",
+                                  statement->values[i].location);
+                return 0;
+            }
+
+            if (schema->columns[i].type == DATA_TYPE_INT &&
+                !int_literal_in_range(&statement->values[i])) {
+                set_runtime_error(error,
+                                  "정수 값이 int 범위를 벗어났습니다.",
+                                  statement->values[i].location);
+                return 0;
+            }
+
+            if (schema->columns[i].type == DATA_TYPE_STRING &&
+                !string_literal_is_safe_for_csv(&statement->values[i])) {
+                set_runtime_error(error,
+                                  "문자열 값이 CSV에서 수식으로 해석될 수 없습니다.",
                                   statement->values[i].location);
                 return 0;
             }
@@ -111,9 +167,34 @@ static int build_insert_row_values(const TableSchema *schema,
             return 0;
         }
 
+        if (schema->columns[schema_index].type == DATA_TYPE_INT &&
+            !int_literal_in_range(&statement->values[i])) {
+            set_runtime_error(error,
+                              "정수 값이 int 범위를 벗어났습니다.",
+                              statement->values[i].location);
+            return 0;
+        }
+
+        if (schema->columns[schema_index].type == DATA_TYPE_STRING &&
+            !string_literal_is_safe_for_csv(&statement->values[i])) {
+            set_runtime_error(error,
+                              "문자열 값이 CSV에서 수식으로 해석될 수 없습니다.",
+                              statement->values[i].location);
+            return 0;
+        }
+
         snprintf(row_values[schema_index], sizeof(row_values[schema_index]), "%s",
                  statement->values[i].text);
         used_columns[schema_index] = 1;
+    }
+
+    for (i = 0; i < schema->column_count; i++) {
+        if (!used_columns[i]) {
+            set_runtime_error(error,
+                              "INSERT 문에 스키마의 모든 컬럼 값이 필요합니다.",
+                              statement->table_location);
+            return 0;
+        }
     }
 
     return 1;
