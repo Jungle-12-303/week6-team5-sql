@@ -19,6 +19,7 @@
 static int ensure_directory(const char *path);
 static int write_text_file(const char *path, const char *text);
 static int file_contains_text(const char *path, const char *needle);
+static int capture_run_cli(int argc, char **argv, const char *output_path, int *exit_code);
 static int capture_run_program(const AppConfig *config, const char *output_path);
 static int capture_storage_print_rows(const AppConfig *config,
                                       const TableSchema *schema,
@@ -37,6 +38,7 @@ static int create_temp_workspace(char *base_path,
 static int test_parse_arguments_success(void)
 {
     AppConfig config;
+    ErrorInfo error;
     char *argv[] = {
         "sqlproc",
         "--schema-dir", "schemas",
@@ -44,7 +46,7 @@ static int test_parse_arguments_success(void)
         "input.sql"
     };
 
-    if (!parse_arguments(6, argv, &config)) {
+    if (parse_arguments(6, argv, &config, &error) != ARGUMENT_PARSE_OK) {
         return 0;
     }
 
@@ -66,6 +68,7 @@ static int test_parse_arguments_success(void)
 static int test_parse_arguments_fail(void)
 {
     AppConfig config;
+    ErrorInfo error;
     char *argv[] = {
         "sqlproc",
         "--schema-dir", "schemas",
@@ -73,7 +76,53 @@ static int test_parse_arguments_fail(void)
         "input.sql"
     };
 
-    return !parse_arguments(5, argv, &config);
+    if (parse_arguments(5, argv, &config, &error) != ARGUMENT_PARSE_ERROR) {
+        return 0;
+    }
+
+    return strstr(error.message, "실행 인자 수가 올바르지 않습니다.") != NULL;
+}
+
+static int test_parse_arguments_help_long(void)
+{
+    AppConfig config;
+    ErrorInfo error;
+    char *argv[] = {
+        "sqlproc",
+        "--help"
+    };
+
+    return parse_arguments(2, argv, &config, &error) == ARGUMENT_PARSE_HELP;
+}
+
+static int test_parse_arguments_help_short(void)
+{
+    AppConfig config;
+    ErrorInfo error;
+    char *argv[] = {
+        "sqlproc",
+        "-help"
+    };
+
+    return parse_arguments(2, argv, &config, &error) == ARGUMENT_PARSE_HELP;
+}
+
+static int test_parse_arguments_unknown_option_fail(void)
+{
+    AppConfig config;
+    ErrorInfo error;
+    char *argv[] = {
+        "sqlproc",
+        "--schema-dir", "schemas",
+        "--wrong-option", "data",
+        "input.sql"
+    };
+
+    if (parse_arguments(6, argv, &config, &error) != ARGUMENT_PARSE_ERROR) {
+        return 0;
+    }
+
+    return strstr(error.message, "--wrong-option") != NULL;
 }
 
 static int test_tokenize_select(void)
@@ -246,6 +295,80 @@ static int test_run_program_success(void)
     return 1;
 }
 
+static int test_run_cli_help_output(void)
+{
+    char *argv[] = {
+        "sqlproc",
+        "--help"
+    };
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char output_path[256];
+    int exit_code;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_help_output_")) {
+        return 0;
+    }
+
+    snprintf(output_path, sizeof(output_path), "%s/stderr.txt", base_dir);
+    if (!capture_run_cli(2, argv, output_path, &exit_code)) {
+        return 0;
+    }
+
+    if (exit_code != 0) {
+        return 0;
+    }
+
+    return file_contains_text(output_path,
+                              "usage: sqlproc --schema-dir <dir> --data-dir <dir> <input.sql>\n");
+}
+
+static int test_run_cli_invalid_arguments_show_error_and_usage(void)
+{
+    char *argv[] = {
+        "sqlproc",
+        "--wrong-option"
+    };
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char output_path[256];
+    int exit_code;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_invalid_args_")) {
+        return 0;
+    }
+
+    snprintf(output_path, sizeof(output_path), "%s/stderr.txt", base_dir);
+    if (!capture_run_cli(2, argv, output_path, &exit_code)) {
+        return 0;
+    }
+
+    if (exit_code != 1) {
+        return 0;
+    }
+
+    if (!file_contains_text(output_path, "오류: 실행 인자 수가 올바르지 않습니다.\n")) {
+        return 0;
+    }
+
+    return file_contains_text(output_path,
+                              "usage: sqlproc --schema-dir <dir> --data-dir <dir> <input.sql>\n");
+}
+
 static int ensure_directory(const char *path)
 {
     /* 테스트용 임시 워크스페이스 디렉터리를 보장합니다. */
@@ -320,6 +443,41 @@ static int capture_run_program(const AppConfig *config, const char *output_path)
     close(saved_stdout);
     fclose(file);
     return result == 0;
+}
+
+static int capture_run_cli(int argc, char **argv, const char *output_path, int *exit_code)
+{
+    FILE *file;
+    int saved_stderr;
+    int result;
+
+    /* run_cli의 stderr를 파일로 받아 도움말과 오류 메시지를 검증합니다. */
+    file = fopen(output_path, "wb");
+    if (file == NULL) {
+        return 0;
+    }
+
+    fflush(stderr);
+    saved_stderr = dup(STDERR_FILENO);
+    if (saved_stderr < 0) {
+        fclose(file);
+        return 0;
+    }
+
+    if (dup2(fileno(file), STDERR_FILENO) < 0) {
+        close(saved_stderr);
+        fclose(file);
+        return 0;
+    }
+
+    result = run_cli(argc, argv);
+    fflush(stderr);
+    dup2(saved_stderr, STDERR_FILENO);
+    close(saved_stderr);
+    fclose(file);
+
+    *exit_code = result;
+    return 1;
 }
 
 static int capture_storage_print_rows(const AppConfig *config,
@@ -569,6 +727,21 @@ int main(void)
         return 1;
     }
 
+    if (!test_parse_arguments_help_long()) {
+        fprintf(stderr, "test_parse_arguments_help_long failed\n");
+        return 1;
+    }
+
+    if (!test_parse_arguments_help_short()) {
+        fprintf(stderr, "test_parse_arguments_help_short failed\n");
+        return 1;
+    }
+
+    if (!test_parse_arguments_unknown_option_fail()) {
+        fprintf(stderr, "test_parse_arguments_unknown_option_fail failed\n");
+        return 1;
+    }
+
     if (!test_tokenize_select()) {
         fprintf(stderr, "test_tokenize_select failed\n");
         return 1;
@@ -586,6 +759,16 @@ int main(void)
 
     if (!test_run_program_success()) {
         fprintf(stderr, "test_run_program_success failed\n");
+        return 1;
+    }
+
+    if (!test_run_cli_help_output()) {
+        fprintf(stderr, "test_run_cli_help_output failed\n");
+        return 1;
+    }
+
+    if (!test_run_cli_invalid_arguments_show_error_and_usage()) {
+        fprintf(stderr, "test_run_cli_invalid_arguments_show_error_and_usage failed\n");
         return 1;
     }
 

@@ -81,6 +81,13 @@ typedef struct {
     int column;
 } ErrorInfo;
 
+/* 명령행 인자 해석 결과입니다. */
+typedef enum {
+    ARGUMENT_PARSE_OK,
+    ARGUMENT_PARSE_HELP,
+    ARGUMENT_PARSE_ERROR
+} ArgumentParseResult;
+
 /* 토크나이저가 만든 토큰 1개입니다. */
 typedef struct {
     TokenType type;
@@ -151,9 +158,10 @@ typedef struct {
 } SqlProgram;
 
 /* app.c — 인자 파싱, SQL 파일 읽기, 실행 진입 */
-int parse_arguments(int argc, char **argv, AppConfig *config);
+ArgumentParseResult parse_arguments(int argc, char **argv, AppConfig *config, ErrorInfo *error);
 int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo *error);
 int run_program(const AppConfig *config);
+int run_cli(int argc, char **argv);
 void print_error(const ErrorInfo *error);
 
 /* tokenizer.c — SQL 문자열을 토큰 배열로 변환 */
