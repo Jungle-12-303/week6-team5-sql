@@ -60,7 +60,6 @@ int parse_arguments(int argc, char **argv, AppConfig *config)
 int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo *error)
 {
     FILE *file;
-    size_t read_size;
     size_t total_size;
 
     /*
@@ -88,19 +87,20 @@ int load_sql_file(const char *path, char *buffer, size_t buffer_size, ErrorInfo 
         return 0;
     }
 
-    /*
-     * 파일이 버퍼보다 큰지 확인하기 위해 1바이트를 더 읽어 봅니다.
-     * 추가로 읽히면 파일이 너무 큰 것이므로 잘린 채 실행하지 않고 실패합니다.
-     * buffer 대신 probe를 사용해 이미 읽은 SQL 내용이 덮이지 않도록 합니다.
-     */
-    {
+    if (total_size == buffer_size - 1) {
         char probe;
-        read_size = fread(&probe, 1, 1, file);
-    }
-    if (read_size > 0) {
-        fclose(file);
-        snprintf(error->message, sizeof(error->message), "SQL 파일이 너무 큽니다.");
-        return 0;
+        size_t extra_size;
+
+        /*
+         * 버퍼가 가득 찼을 때만 1바이트를 더 읽어 실제로 더 큰 파일인지 확인합니다.
+         * 한 번 더 읽혔다면 잘린 내용을 실행하지 않고 실패합니다.
+         */
+        extra_size = fread(&probe, 1, 1, file);
+        if (extra_size > 0) {
+            fclose(file);
+            snprintf(error->message, sizeof(error->message), "SQL 파일이 너무 큽니다.");
+            return 0;
+        }
     }
 
     fclose(file);

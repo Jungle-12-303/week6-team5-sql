@@ -163,11 +163,19 @@ static int read_string(const char *sql_text,
     char string_text[SQLPROC_MAX_VALUE_LEN];
     int text_index;
 
-    /* 작은따옴표로 감싼 문자열 리터럴을 읽고, 내부 내용만 토큰에 저장합니다. */
+    /* 작은따옴표로 감싼 한 줄 문자열 리터럴을 읽고, 내부 내용만 토큰에 저장합니다. */
     *index += 1;
     text_index = 0;
 
     while (sql_text[*index] != '\0' && sql_text[*index] != '\'') {
+        if (sql_text[*index] == '\n' || sql_text[*index] == '\r') {
+            set_error(error,
+                      "문자열 리터럴 안에는 줄바꿈을 넣을 수 없습니다.",
+                      line,
+                      column + text_index + 1);
+            return 0;
+        }
+
         if (text_index >= SQLPROC_MAX_VALUE_LEN - 1) {
             set_error(error, "문자열 길이가 최대 길이를 넘었습니다.", line, column);
             return 0;
@@ -304,4 +312,3 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
 
     return append_token(tokens, TOKEN_EOF, "", line, column, error);
 }
-
