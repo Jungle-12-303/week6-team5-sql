@@ -129,6 +129,16 @@ SELECT * FROM users;
 SELECT name, age FROM users;
 ```
 
+## 실행 도움말
+
+```bash
+./build/sqlproc --help
+./build/sqlproc -help
+```
+
+- 잘못된 실행 인자를 넣으면 오류 메시지와 함께 사용법을 출력합니다.
+- 기본 실행 형식은 `./build/sqlproc --schema-dir <dir> --data-dir <dir> <input.sql>` 입니다.
+
 ## 시연 예시
 
 ![시연 예시](./docs/images/demo-run.png)
