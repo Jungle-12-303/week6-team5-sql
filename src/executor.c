@@ -1,4 +1,7 @@
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sqlproc.h"
@@ -47,6 +50,37 @@ static int validate_literal_type(DataType data_type, const LiteralValue *value)
     return 0;
 }
 
+static int validate_int_literal_range(const LiteralValue *value)
+{
+    char *end_pointer;
+    long parsed_value;
+
+    /*
+     * 토크나이저는 "숫자처럼 보이는 문자열"까지만 보장하므로
+     * 실제 int 범위 검사는 실행 직전에 한 번 더 확인합니다.
+     */
+    errno = 0;
+    parsed_value = strtol(value->text, &end_pointer, 10);
+    if (errno == ERANGE || *end_pointer != '\0') {
+        return 0;
+    }
+
+    return parsed_value >= INT_MIN && parsed_value <= INT_MAX;
+}
+
+static int validate_typed_literal(DataType data_type, const LiteralValue *value)
+{
+    if (!validate_literal_type(data_type, value)) {
+        return 0;
+    }
+
+    if (data_type == DATA_TYPE_INT) {
+        return validate_int_literal_range(value);
+    }
+
+    return 1;
+}
+
 static int build_insert_row_values(const TableSchema *schema,
                                    const InsertStatement *statement,
                                    char row_values[SQLPROC_MAX_COLUMNS][SQLPROC_MAX_VALUE_LEN],
@@ -72,7 +106,7 @@ static int build_insert_row_values(const TableSchema *schema,
         }
 
         for (i = 0; i < schema->column_count; i++) {
-            if (!validate_literal_type(schema->columns[i].type, &statement->values[i])) {
+            if (!validate_typed_literal(schema->columns[i].type, &statement->values[i])) {
                 set_runtime_error(error,
                                   "INSERT 값 타입이 스키마와 맞지 않습니다.",
                                   statement->values[i].location);
@@ -103,8 +137,8 @@ static int build_insert_row_values(const TableSchema *schema,
             return 0;
         }
 
-        if (!validate_literal_type(schema->columns[schema_index].type,
-                                   &statement->values[i])) {
+        if (!validate_typed_literal(schema->columns[schema_index].type,
+                                    &statement->values[i])) {
             set_runtime_error(error,
                               "INSERT 값 타입이 스키마와 맞지 않습니다.",
                               statement->values[i].location);
@@ -201,8 +235,8 @@ static int validate_where_clause(const TableSchema *schema,
             return 0;
         }
 
-        if (!validate_literal_type(schema->columns[column_index].type,
-                                   &where_clause->items[i].value)) {
+        if (!validate_typed_literal(schema->columns[column_index].type,
+                                    &where_clause->items[i].value)) {
             set_runtime_error(error,
                               "WHERE 절 리터럴 타입이 스키마와 맞지 않습니다.",
                               where_clause->items[i].value.location);

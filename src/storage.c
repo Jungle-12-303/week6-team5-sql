@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -322,8 +323,13 @@ static int parse_int_text(const char *text, long *value)
         return 0;
     }
 
+    errno = 0;
     *value = strtol(text, &end_pointer, 10);
-    return *end_pointer == '\0';
+    if (errno == ERANGE || *end_pointer != '\0') {
+        return 0;
+    }
+
+    return *value >= INT_MIN && *value <= INT_MAX;
 }
 
 static int compare_values(DataType data_type,
@@ -394,10 +400,14 @@ static int row_matches_where(const TableSchema *schema,
             }
 
             if (!parse_int_text(values[column_index], &unused_value)) {
+                /*
+                 * 스키마가 int인 컬럼은 비교 전에 형식과 범위를 모두 검증해
+                 * 손상된 CSV가 있더라도 조용히 잘못된 비교를 하지 않게 합니다.
+                 */
                 snprintf(error->message,
                          sizeof(error->message),
                          "%s",
-                         "정수 컬럼에 숫자가 아닌 값이 저장되어 있습니다.");
+                         "정수 컬럼에 유효한 int 값이 아닌 데이터가 저장되어 있습니다.");
                 error->line = where_clause->items[i].column_location.line;
                 error->column = where_clause->items[i].column_location.column;
                 return -1;
@@ -475,7 +485,12 @@ int storage_print_rows(const AppConfig *config,
 
     if (fgets(line, sizeof(line), file) == NULL) {
         fclose(file);
-        return 1;
+        /*
+         * 파일이 존재하는데 첫 줄을 읽지 못했다면 빈 CSV 또는 손상된 파일입니다.
+         * 헤더 없이 성공 처리하면 SELECT가 조용히 데이터를 놓치게 됩니다.
+         */
+        set_file_error(error, "CSV 헤더를 읽을 수 없습니다.");
+        return 0;
     }
 
     if (!validate_line_length(line,

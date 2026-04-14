@@ -818,6 +818,64 @@ static int test_run_program_reports_elapsed_time(void)
     return file_contains_text(error_path, "총 실행 시간: ");
 }
 
+static int test_where_int_overflow_literal_fail(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char sql_path[256];
+    char output_path[256];
+    char error_path[256];
+    char schema_path[256];
+    char data_path[256];
+    int result;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_where_int_overflow_literal_")) {
+        return 0;
+    }
+
+    snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(error_path, sizeof(error_path), "%s/error.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string,age:int\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(data_path, "id,name,age\n1,kim,20\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(sql_path,
+                         "SELECT * FROM users WHERE age >= 999999999999999999999999999999;\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", sql_path);
+
+    if (!capture_run_program_streams(&config, output_path, error_path, &result)) {
+        return 0;
+    }
+
+    if (result == 0) {
+        return 0;
+    }
+
+    return file_contains_text(error_path, "WHERE 절 리터럴 타입이 스키마와 맞지 않습니다.");
+}
+
 static int test_where_type_mismatch_fail(void)
 {
     AppConfig config;
@@ -875,6 +933,58 @@ static int test_where_type_mismatch_fail(void)
     return file_contains_text(error_path, "WHERE 절 리터럴 타입이 스키마와 맞지 않습니다.");
 }
 
+static int test_insert_int_overflow_literal_fail(void)
+{
+    AppConfig config;
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char sql_path[256];
+    char output_path[256];
+    char error_path[256];
+    char schema_path[256];
+    int result;
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_insert_int_overflow_literal_")) {
+        return 0;
+    }
+
+    snprintf(sql_path, sizeof(sql_path), "%s/input.sql", base_dir);
+    snprintf(output_path, sizeof(output_path), "%s/output.txt", base_dir);
+    snprintf(error_path, sizeof(error_path), "%s/error.txt", base_dir);
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+
+    if (!write_text_file(schema_path, "age:int\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(sql_path,
+                         "INSERT INTO users VALUES (999999999999999999999999999999);\n")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+    snprintf(config.input_path, sizeof(config.input_path), "%s", sql_path);
+
+    if (!capture_run_program_streams(&config, output_path, error_path, &result)) {
+        return 0;
+    }
+
+    if (result == 0) {
+        return 0;
+    }
+
+    return file_contains_text(error_path, "INSERT 값 타입이 스키마와 맞지 않습니다.");
+}
+
 static int test_where_invalid_int_data_fail(void)
 {
     AppConfig config;
@@ -929,7 +1039,62 @@ static int test_where_invalid_int_data_fail(void)
         return 0;
     }
 
-    return file_contains_text(error_path, "정수 컬럼에 숫자가 아닌 값이 저장되어 있습니다.");
+    return file_contains_text(error_path, "정수 컬럼에 유효한 int 값이 아닌 데이터가 저장되어 있습니다.");
+}
+
+static int test_storage_print_rows_empty_file_fail(void)
+{
+    AppConfig config;
+    TableSchema schema;
+    ErrorInfo error;
+    WhereClause where_clause;
+    int selected_indices[SQLPROC_MAX_COLUMNS];
+    char base_dir[256];
+    char schema_dir[256];
+    char data_dir[256];
+    char schema_path[256];
+    char data_path[256];
+
+    if (!create_temp_workspace(base_dir,
+                               sizeof(base_dir),
+                               schema_dir,
+                               sizeof(schema_dir),
+                               data_dir,
+                               sizeof(data_dir),
+                               "sqlproc_storage_empty_csv_")) {
+        return 0;
+    }
+
+    snprintf(schema_path, sizeof(schema_path), "%s/users.schema", schema_dir);
+    snprintf(data_path, sizeof(data_path), "%s/users.csv", data_dir);
+
+    if (!write_text_file(schema_path, "id:int,name:string\n")) {
+        return 0;
+    }
+
+    if (!write_text_file(data_path, "")) {
+        return 0;
+    }
+
+    memset(&config, 0, sizeof(config));
+    memset(&schema, 0, sizeof(schema));
+    memset(&error, 0, sizeof(error));
+    memset(&where_clause, 0, sizeof(where_clause));
+    snprintf(config.schema_dir, sizeof(config.schema_dir), "%s", schema_dir);
+    snprintf(config.data_dir, sizeof(config.data_dir), "%s", data_dir);
+
+    if (!load_table_schema(config.schema_dir, "users", &schema, &error)) {
+        return 0;
+    }
+
+    selected_indices[0] = 0;
+    selected_indices[1] = 1;
+
+    if (storage_print_rows(&config, &schema, selected_indices, 2, &where_clause, &error)) {
+        return 0;
+    }
+
+    return strstr(error.message, "CSV 헤더를 읽을 수 없습니다.") != NULL;
 }
 
 static int test_storage_print_rows_without_data_file(void)
@@ -1126,13 +1291,28 @@ int main(void)
         return 1;
     }
 
+    if (!test_storage_print_rows_empty_file_fail()) {
+        fprintf(stderr, "test_storage_print_rows_empty_file_fail failed\n");
+        return 1;
+    }
+
     if (!test_run_program_reports_elapsed_time()) {
         fprintf(stderr, "test_run_program_reports_elapsed_time failed\n");
         return 1;
     }
 
+    if (!test_where_int_overflow_literal_fail()) {
+        fprintf(stderr, "test_where_int_overflow_literal_fail failed\n");
+        return 1;
+    }
+
     if (!test_where_type_mismatch_fail()) {
         fprintf(stderr, "test_where_type_mismatch_fail failed\n");
+        return 1;
+    }
+
+    if (!test_insert_int_overflow_literal_fail()) {
+        fprintf(stderr, "test_insert_int_overflow_literal_fail failed\n");
         return 1;
     }
 
