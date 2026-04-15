@@ -12,12 +12,16 @@
 - 목표 실행 방식:
   - SQL 파일 실행 모드
 
-## 2. 구현 필요 기능
+## 2. 현재 구현된 주요 기능
 
 - `INSERT`
 - `SELECT`
+- `SELECT ... WHERE`
+- `WHERE` full scan 조회
 - CSV 헤더 자동 생성
+- CSV 헤더 검증
 - 스토리지 인터페이스
+- 실행 시간 출력
 
 ```mermaid
 flowchart TD
@@ -25,17 +29,21 @@ flowchart TD
     B --> C[tokenizer.c<br>문자열 → 토큰 배열]
     C --> D[parser.c<br>토큰 → 구조체]
     D --> E[executor.c<br>구조체 실행]
-    E --> F[(CSV 파일<br>데이터 저장 및 읽기)]
-    F --> E
+    E --> F[schema.c<br>스키마 로딩]
+    E --> G[storage.c<br>CSV 저장 및 full scan 조회]
+    F --> I[(.schema 파일)]
+    G --> H[(CSV 파일<br>데이터 저장 및 읽기)]
 ```
 
-## 3. 지원 필요 SQL 구문 (예시)
+## 3. 지원 SQL 구문 (예시)
 
 ```sql
 INSERT INTO users VALUES (1, 'kim', 20);
 INSERT INTO users (id, name, age) VALUES (2, 'lee', 30);
 SELECT * FROM users;
 SELECT name, age FROM users;
+SELECT name, age FROM users WHERE age >= 25;
+SELECT * FROM users WHERE age >= 25 AND name = 'lee';
 ```
 
 ## 4. 지원 범위와 제한
@@ -44,11 +52,12 @@ SELECT name, age FROM users;
 
 - 단일 테이블
 - 문자열 최대 길이 `63`
+- `WHERE` 비교 연산자 `=`, `<`, `<=`, `>`, `>=`
+- 조건은 최대 2개까지 `AND`로 연결
+- 조회는 full scan 방식
 
 ### 구현하지 않을 내용
 
-- `WHERE`
-- `AND`
 - `OR`
 - `JOIN`
 - `ORDER BY`
@@ -97,11 +106,15 @@ id:int,name:string,age:int
 - [src/schema.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/src/schema.c)
   `.schema` 로딩, 타입 해석
 - [src/executor.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/src/executor.c)
-  CSV 저장/조회
+  SQL 검증, WHERE 유효성 검사, storage 호출
+- [src/storage.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/src/storage.c)
+  CSV 헤더 검증, 행 저장, full scan 조회
 - [tests/test_runner.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/tests/test_runner.c)
   전체 기능 테스트
 - [examples/demo.sql](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/examples/demo.sql)
   배치 실행 예시
+- [examples/where_demo.sql](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/examples/where_demo.sql)
+  WHERE 실행 예시
 - [examples/user_input.sql](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/examples/user_input.sql)
   사용자 입력 예시
 
@@ -160,6 +173,11 @@ make test
 2. `make test`
 3. 변경된 README 예시나 CLI 예시를 실제로 한 번 실행
 
+참고:
+
+- CLI는 실행이 끝나면 `stderr`에 총 실행 시간을 출력합니다.
+- `WHERE` 관련 변경은 `examples/where_demo.sql`까지 함께 확인하는 편이 좋습니다.
+
 배치 예시:
 
 ```bash
@@ -175,13 +193,13 @@ make test
 
 1. `main`
 2. `dev`
-3. `feature/<기능명>`
+3. `feat/<기능명>` 또는 `feature/<기능명>`
 
 규칙:
 
 - 직접 `main`에서 작업하지 않습니다.
 - 일반적인 개발 작업은 항상 최신 `dev`에서 기능 브랜치를 따서 진행합니다.
-- 기능 완료 후 `feature/* -> dev`로 병합합니다.
+- 기능 완료 후 `feat/*` 또는 `feature/*`에서 `dev`로 병합합니다.
 - 최종 통합은 `dev -> main`으로 병합합니다.
 - merge는 모두 `--no-ff` 기준으로 구분 가능한 이력을 남깁니다.
 
@@ -263,6 +281,7 @@ make test
 - 토큰이 필요하면 `src/tokenizer.c`
 - 문법 파싱은 `src/parser.c`
 - 실행은 `src/executor.c`
+- 조회 조건 비교가 바뀌면 `src/storage.c`도 함께 확인
 - 관련 테스트는 `tests/test_runner.c`
 
 ### 스키마 규칙 추가

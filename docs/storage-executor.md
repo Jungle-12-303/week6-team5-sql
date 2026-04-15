@@ -12,7 +12,7 @@ SQL 처리기는 "무엇을 실행할지"와 "어떻게 파일에 저장할지"�
 flowchart LR
     subgraph executor["executor.c — SQL 로직"]
         E1["INSERT 검증<br/>(컬럼 이름·타입)"]
-        E2["SELECT 검증<br/>(컬럼 이름·범위)"]
+        E2["SELECT 검증<br/>(컬럼 이름·WHERE 타입/범위)"]
         E3["값 배치<br/>(스키마 순서 맞추기)"]
     end
 
@@ -26,8 +26,8 @@ flowchart LR
     executor -->|"storage_print_rows()"| storage
 ```
 
-- **`executor.c`**: SQL 문장 구조체를 받아 타입·이름 검증 후 스토리지에 요청
-- **`storage.c`**: 파일 경로, 헤더, CSV 행 입출력만 담당
+- **`executor.c`**: SQL 문장 구조체를 받아 타입·이름·WHERE 조건을 검증한 뒤 스토리지에 요청
+- **`storage.c`**: 파일 경로, 헤더, CSV 행 입출력과 행 단위 WHERE 비교를 담당
 
 이렇게 나누면 저장 방식이 바뀌어도 executor.c를 고칠 필요가 없습니다.
 
@@ -41,7 +41,9 @@ flowchart TD
     TS["TableSchema<br/>table_name<br/>columns[] · column_count"]
     CS["ColumnSchema<br/>name · type"]
     IS["InsertStatement<br/>table_name<br/>column_names[] · values[]<br/>has_column_list"]
-    SS["SelectStatement<br/>table_name<br/>column_names[]<br/>select_all"]
+    SS["SelectStatement<br/>table_name<br/>column_names[]<br/>select_all · where_clause"]
+    WC["WhereClause<br/>count · items[]"]
+    PD["Predicate<br/>column_name · operator_type · value"]
     LV["LiteralValue<br/>type · text · location"]
     EI["ErrorInfo<br/>message · line · column"]
 
@@ -50,6 +52,9 @@ flowchart TD
     IS -->|"values[]"| LV
     IS -->|"타입·이름 검증"| CS
     SS -->|"이름 검증"| CS
+    SS --> WC
+    WC --> PD
+    PD --> LV
     EI -. "오류 발생 시 채워짐" .-> IS
     EI -. "오류 발생 시 채워짐" .-> SS
 ```
@@ -60,7 +65,9 @@ flowchart TD
 | `TableSchema` | 스키마 파일에서 읽은 컬럼 순서/타입 정보 |
 | `ColumnSchema` | 컬럼 하나의 이름과 타입 (`int` / `string`) |
 | `InsertStatement` | 파서가 만든 INSERT 문장 구조체 |
-| `SelectStatement` | 파서가 만든 SELECT 문장 구조체 |
+| `SelectStatement` | 파서가 만든 SELECT 문장 구조체. `where_clause`를 포함 |
+| `WhereClause` | WHERE 조건 개수와 조건 목록 |
+| `Predicate` | WHERE 조건 1개 (`컬럼명`, `연산자`, `리터럴`) |
 | `LiteralValue` | 숫자/문자열 리터럴과 그 위치 |
 | `ErrorInfo` | 오류 메시지와 줄·열 위치 |
 
@@ -77,7 +84,7 @@ flowchart TD
     LTS["load_table_schema()"]
     BIRV["build_insert_row_values()"]
     FSC["find_schema_column()"]
-    VLT["validate_literal_type()"]
+    VLT["validate_typed_literal()"]
     SAR["storage_append_row()"]
 
     EP -->|"STATEMENT_INSERT"| EI
@@ -96,6 +103,7 @@ flowchart TD
     ES["execute_select()"]
     LTS["load_table_schema()"]
     RSC["resolve_selected_columns()"]
+    VWC["validate_where_clause()"]
     FSC["find_schema_column()"]
     SPR["storage_print_rows()"]
 
@@ -103,6 +111,8 @@ flowchart TD
     ES --> LTS
     ES --> RSC
     RSC --> FSC
+    ES --> VWC
+    VWC --> FSC
     ES --> SPR
 ```
 
@@ -215,6 +225,39 @@ flowchart TD
 
 ---
 
+### `validate_where_clause()`
+
+`WHERE` 절이 실제로 실행 가능한 조건인지, CSV를 읽기 전에 미리 검사합니다.
+
+```mermaid
+flowchart TD
+    START["시작"]
+    LOOP["조건 1개씩 확인"]
+    FIND["find_schema_column()"]
+    EXISTS{"컬럼 존재?"}
+    TYPE["validate_typed_literal()"]
+    OKTYPE{"타입/범위 일치?"}
+    NEXT["다음 조건"]
+    END["검증 통과"]
+    ERR["오류 반환"]
+
+    START --> LOOP
+    LOOP --> FIND
+    FIND --> EXISTS
+    EXISTS -->|"아니오"| ERR
+    EXISTS -->|"예"| TYPE
+    TYPE --> OKTYPE
+    OKTYPE -->|"아니오"| ERR
+    OKTYPE -->|"예"| NEXT
+    NEXT --> LOOP
+    LOOP -->|"모두 완료"| END
+```
+
+- 컬럼 이름이 스키마에 없으면 executor 단계에서 바로 실패합니다.
+- `int` 컬럼은 타입 일치뿐 아니라 실제 `int` 범위 안에 드는지도 같이 확인합니다.
+
+---
+
 ## 5. storage.c 함수 흐름
 
 ### 5-1. `storage_append_row()` (INSERT)
@@ -254,6 +297,7 @@ flowchart TD
     VHV["validate_header_values()"]
     PSH["print_selected_header()"]
     LOOP["행 순회"]
+    MATCH["row_matches_where()"]
     PRINT["선택 컬럼만 출력"]
     OK["성공"]
     ERR["오류"]
@@ -271,7 +315,12 @@ flowchart TD
     PSH --> LOOP
     LOOP -->|"다음 행"| VLL
     LOOP -->|"끝"| OK
-    VLL -->|"행 통과"| PRINT --> LOOP
+    VLL -->|"행 통과"| PCL
+    PCL -->|"실패"| ERR
+    PCL -->|"통과"| MATCH
+    MATCH -->|"거짓"| LOOP
+    MATCH -->|"참"| PRINT --> LOOP
+    MATCH -->|"오류"| ERR
 ```
 
 ---
@@ -379,6 +428,40 @@ kim,"lee,park",30
 
 ---
 
+### `row_matches_where()`
+
+한 CSV 행이 `WHERE` 조건을 만족하는지 검사합니다. 현재 구현은 full scan 방식이므로, 행을 읽을 때마다 이 함수를 호출합니다.
+
+```mermaid
+flowchart TD
+    START["행 1개 검사 시작"]
+    LOOP["조건 1개씩 확인"]
+    FIND["조건 컬럼 인덱스 찾기"]
+    PARSE{"int 컬럼이면\n정수로 해석 가능?"}
+    COMP["compare_values()"]
+    PASS{"조건 만족?"}
+    NEXT["다음 조건"]
+    MATCH["이 행은 출력 대상"]
+    SKIP["이 행은 건너뜀"]
+    ERR["오류 반환"]
+
+    START --> LOOP
+    LOOP --> FIND
+    FIND --> PARSE
+    PARSE -->|"아니오"| ERR
+    PARSE -->|"예"| COMP
+    COMP --> PASS
+    PASS -->|"아니오"| SKIP
+    PASS -->|"예"| NEXT
+    NEXT --> LOOP
+    LOOP -->|"모두 만족"| MATCH
+```
+
+- 조건 하나라도 거짓이면 그 행은 출력하지 않습니다.
+- 스키마가 `int`인 컬럼인데 CSV 안 값이 유효한 정수가 아니면 오류로 처리합니다.
+
+---
+
 ### `write_csv_field()`
 
 CSV 필드 하나를 안전하게 파일에 씁니다. 쉼표·따옴표·개행이 포함된 경우 자동으로 큰따옴표로 감쌉니다.
@@ -455,9 +538,11 @@ sequenceDiagram
     EP->>ES: SELECT 문장 전달
     ES->>ES: 스키마 로드
     ES->>ES: resolve_selected_columns()
+    ES->>ES: validate_where_clause()
     ES->>ST: storage_print_rows()
     ST->>ST: 헤더 검증
-    ST->>ST: 행 순회 + 출력
+    ST->>ST: 행 순회 + row_matches_where()
+    ST->>ST: 조건 만족 행만 출력
     ST-->>ES: 성공/실패
 ```
 

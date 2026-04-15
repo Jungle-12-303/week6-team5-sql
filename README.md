@@ -20,10 +20,10 @@ flowchart LR
     A["SQL File"] --> B["Tokenizer"]
     B --> C["Parser"]
     C --> D["Executor"]
-    D -->|"storage_append_row()"| E["storage.c"]
-    D -->|"storage_print_rows()"| E
-    E --> F["CSV File"]
+    D -->|"load_table_schema()"| E["schema.c"]
+    D -->|"storage_append_row()\nstorage_print_rows()"| F["storage.c"]
     E --> G["Schema File"]
+    F --> H["CSV File"]
 ```
 
 ## 실행 흐름
@@ -34,7 +34,8 @@ flowchart LR
     B --> C["tokenizer.c"]
     C --> D["parser.c"]
     D --> E["executor.c"]
-    E --> F["storage.c / schema.c"]
+    E --> F["schema.c"]
+    E --> G["storage.c"]
 ```
 
 | 단계 | 함수 / 파일 | 핵심 역할 |
@@ -101,7 +102,8 @@ flowchart LR
 | `SqlProgram` | 파싱된 SQL 문장 목록 | `parser.c` | `Statement[]` |
 | `Statement` | `INSERT` / `SELECT` 구분 단위 | `parser.c` | `InsertStatement` or `SelectStatement` |
 | `InsertStatement` | 테이블명, 컬럼명[], 값[] | `parser.c` | `LiteralValue[]` |
-| `SelectStatement` | 테이블명, `select_all`, 컬럼명[], `where_clause` | `parser.c` | `Predicate[]` |
+| `SelectStatement` | 테이블명, `select_all`, 컬럼명[], `where_clause` | `parser.c` | `WhereClause` |
+| `WhereClause` | WHERE 조건 묶음 | `parser.c` | `Predicate[]` |
 | `TableSchema` | 컬럼 순서·타입 정의 | `schema.c` | `ColumnSchema[]` |
 | `ErrorInfo` | 오류 메시지 + 위치 | 전 단계 공용 | — |
 
@@ -145,9 +147,16 @@ SELECT * FROM users WHERE age >= 25 AND name = 'lee';
 
 예시:
 
+`stdout`
+
 ```text
 name    age
 lee     30
+```
+
+`stderr`
+
+```text
 총 실행 시간: 0.284 ms
 ```
 
@@ -285,7 +294,7 @@ flowchart TD
         C1 --> C2
     end
 
-    CHECK --> DEV["② feature 브랜치에서 개발<br/>-std=c99 -Wall -Wextra -Werror"]
+    CHECK --> DEV["② 기능 브랜치에서 개발<br/>-std=c99 -Wall -Wextra -Werror"]
     DEV --> TEST["③ make + make test"]
     TEST --> REVIEW
 
@@ -300,6 +309,6 @@ flowchart TD
     LOG --> ISSUE["⑥ GitHub Issue 생성<br/>검증 범위 · 발견 문제 · 남은 리스크"]
     ISSUE --> PR["⑦ PR 생성"]
     PR --> PASS{"테스트 통과?"}
-    PASS -->|Yes| MERGE([feature → dev merge])
+    PASS -->|Yes| MERGE([기능 브랜치 → dev merge])
     PASS -->|No| DEV
 ```

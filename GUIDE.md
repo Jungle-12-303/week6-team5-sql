@@ -39,13 +39,17 @@ SELECT * FROM users;
 
 -- 특정 컬럼만 조회
 SELECT name, age FROM users;
+
+-- WHERE 조건 조회 (full scan)
+SELECT name, age FROM users WHERE age >= 25;
+SELECT * FROM users WHERE age >= 25 AND name = 'lee';
 ```
 
 지원하지 않는 SQL (의도적으로 제외):
 
 ```sql
--- WHERE, JOIN, ORDER BY, UPDATE, DELETE 등은 미구현
-SELECT * FROM users WHERE age >= 20;   -- ✗
+-- OR, JOIN, ORDER BY, UPDATE, DELETE 등은 미구현
+SELECT * FROM users WHERE age >= 20 OR name = 'kim';   -- ✗
 ```
 
 ---
@@ -70,6 +74,7 @@ week6-team5-sql/
 │   ├── schemas/
 │   │   └── users.schema
 │   ├── demo.sql
+│   ├── where_demo.sql
 │   └── user_input.sql
 └── Makefile
 ```
@@ -104,14 +109,14 @@ flowchart TD
 
 ### 단계별 변환 예시
 
-SQL 한 줄 `SELECT name, age FROM users;`이 어떻게 처리되는지 따라가 봅니다.
+SQL 한 줄 `SELECT name, age FROM users WHERE age >= 25;`이 어떻게 처리되는지 따라가 봅니다.
 
 **① 토큰화** (문자열 → 조각)
 
 ```
-"SELECT name, age FROM users;"
+"SELECT name, age FROM users WHERE age >= 25;"
 
-[SELECT] [name] [,] [age] [FROM] [users] [;] [EOF]
+[SELECT] [name] [,] [age] [FROM] [users] [WHERE] [age] [>=] [25] [;] [EOF]
 ```
 
 **② 파싱** (조각 → 구조체)
@@ -122,6 +127,7 @@ SelectStatement {
     select_all   = 0
     column_count = 2
     column_names = ["name", "age"]
+    where_clause = [age >= 25]
 }
 ```
 
@@ -129,9 +135,10 @@ SelectStatement {
 
 ```
 1. users.schema 로드 → 컬럼 순서 파악
-2. users.csv 열기
-3. 헤더 행 읽어 스키마와 일치 확인
-4. 나머지 행을 한 줄씩 읽어 name, age 컬럼만 출력
+2. WHERE 컬럼과 리터럴 타입이 스키마와 맞는지 확인
+3. users.csv 열기
+4. 헤더 행 읽어 스키마와 일치 확인
+5. 나머지 행을 한 줄씩 읽어 조건에 맞는 name, age만 출력
 ```
 
 ---
@@ -181,7 +188,10 @@ graph LR
 #define SQLPROC_MAX_NAME_LEN  64   // 컬럼명·테이블명 최대 63자
 #define SQLPROC_MAX_VALUE_LEN 64   // 값 문자열 최대 63자
 #define SQLPROC_MAX_COLUMNS   16   // 한 테이블 최대 16개 컬럼
+#define SQLPROC_MAX_PREDICATES 2   // WHERE 조건 최대 2개
 #define SQLPROC_MAX_TOKENS   512   // SQL 한 문자열당 최대 토큰 수
+#define SQLPROC_MAX_STATEMENTS 32  // SQL 파일 최대 문장 수
+#define SQLPROC_MAX_SQL_SIZE 8192  // SQL 파일 최대 크기
 ```
 
 > C에서는 배열 크기를 미리 정해야 합니다.  
@@ -201,11 +211,19 @@ typedef enum {
     TOKEN_LPAREN,           // (
     TOKEN_RPAREN,           // )
     TOKEN_STAR,             // *
+    TOKEN_EQUAL,            // =
+    TOKEN_LESS,             // <
+    TOKEN_LESS_EQUAL,       // <=
+    TOKEN_GREATER,          // >
+    TOKEN_GREATER_EQUAL,    // >=
     TOKEN_KEYWORD_INSERT,   // INSERT
     TOKEN_KEYWORD_INTO,     // INTO
     TOKEN_KEYWORD_VALUES,   // VALUES
     TOKEN_KEYWORD_SELECT,   // SELECT
-    TOKEN_KEYWORD_FROM      // FROM
+    TOKEN_KEYWORD_FROM,     // FROM
+    TOKEN_KEYWORD_WHERE,    // WHERE
+    TOKEN_KEYWORD_AND,      // AND
+    TOKEN_KEYWORD_OR        // OR
 } TokenType;
 
 /* 파서가 구분하는 SQL 문장 종류 */
@@ -213,6 +231,15 @@ typedef enum {
     STATEMENT_INSERT,
     STATEMENT_SELECT
 } StatementType;
+
+/* WHERE 절 비교 연산자 */
+typedef enum {
+    COMPARE_EQUAL,
+    COMPARE_LESS,
+    COMPARE_LESS_EQUAL,
+    COMPARE_GREATER,
+    COMPARE_GREATER_EQUAL
+} CompareOperator;
 ```
 
 ### 핵심 구조체 관계도
@@ -242,6 +269,16 @@ classDiagram
         int select_all
         int column_count
         char column_names[16][64]
+        WhereClause where_clause
+    }
+    class WhereClause {
+        int count
+        Predicate items[2]
+    }
+    class Predicate {
+        char column_name[64]
+        CompareOperator operator_type
+        LiteralValue value
     }
     class TableSchema {
         char table_name[64]
@@ -256,6 +293,8 @@ classDiagram
     SqlProgram "1" --> "*" Statement
     Statement --> InsertStatement
     Statement --> SelectStatement
+    SelectStatement --> WhereClause
+    WhereClause --> Predicate
     TableSchema "1" --> "*" ColumnSchema
 ```
 
@@ -321,6 +360,9 @@ static TokenType keyword_type(const char *text)
     if (strcmp(text, "select") == 0) return TOKEN_KEYWORD_SELECT;
     if (strcmp(text, "from")   == 0) return TOKEN_KEYWORD_FROM;
     if (strcmp(text, "insert") == 0) return TOKEN_KEYWORD_INSERT;
+    if (strcmp(text, "where")  == 0) return TOKEN_KEYWORD_WHERE;
+    if (strcmp(text, "and")    == 0) return TOKEN_KEYWORD_AND;
+    if (strcmp(text, "or")     == 0) return TOKEN_KEYWORD_OR;
     /* ... */
     return TOKEN_IDENTIFIER;  /* 예약어가 아니면 식별자 */
 }
@@ -366,8 +408,13 @@ flowchart TD
     F --> H["consume(FROM)"]
     G --> H
     H --> I["테이블명 읽기\nparse_identifier()"]
-    I --> J[완료]
+    I --> J{"WHERE 키워드?"}
+    J -- 없음 --> K[완료]
+    J -- 있음 --> L["parse_where_clause()\n비교 조건 1~2개 + AND"]
+    L --> K
 ```
+
+현재 `parse_where_clause()`는 비교 조건 1개 또는 2개만 허용하고, 조건 연결은 `AND`만 지원합니다. `OR`가 나오면 파서 단계에서 바로 실패합니다.
 
 **INSERT 파싱 흐름:**
 
@@ -394,11 +441,13 @@ executor.c는 SQL 검증과 흐름 제어만 담당하고, 파일 읽기/쓰기�
 flowchart LR
     subgraph executor["executor.c — SQL 로직"]
         E1["타입·이름 검증"]
-        E2["컬럼 순서 재배치"]
+        E2["WHERE 유효성 확인"]
+        E3["컬럼 순서 재배치"]
     end
     subgraph storage["storage.c — 파일 입출력"]
         S1["CSV 헤더 생성·검증"]
         S2["행 읽기·쓰기"]
+        S3["full scan + WHERE 비교"]
     end
     executor -->|"storage_append_row()\nstorage_print_rows()"| storage
 ```
@@ -441,20 +490,30 @@ INSERT INTO users (age, name, id) VALUES (20, 'kim', 1);
 flowchart TD
     A["execute_select()"] --> B["load_table_schema()\n스키마 파일 읽기"]
     B --> C["resolve_selected_columns()\nSELECT * 또는 컬럼명 → 스키마 인덱스 배열"]
-    C --> D["storage_print_rows()"]
+    C --> D["validate_where_clause()\nWHERE 컬럼/타입/정수 범위 확인"]
+    D --> E["storage_print_rows()"]
 
     subgraph storage_detail["storage.c 내부"]
-        D --> E{"CSV 파일 없음?"}
-        E -- ENOENT --> F["헤더만 출력하고 종료\n빈 테이블 처리"]
-        E -- 정상 --> G["헤더 행 읽기\n스키마와 일치 확인"]
-        G --> H["print_selected_header()\n선택 컬럼명 출력"]
-        H --> I["행 반복: fgets()"]
-        I --> J["parse_csv_line()\nCSV 행 파싱"]
-        J --> K["선택 컬럼만 탭 구분 출력"]
-        K --> I
-        I -- EOF --> L[완료]
+        E --> F{"CSV 파일 없음?"}
+        F -- ENOENT --> G["헤더만 출력하고 종료\n빈 테이블 처리"]
+        F -- 정상 --> H["헤더 행 읽기\n스키마와 일치 확인"]
+        H --> I["print_selected_header()\n선택 컬럼명 출력"]
+        I --> J["행 반복: fgets()"]
+        J --> K["parse_csv_line()\nCSV 행 파싱"]
+        K --> L["row_matches_where()\n조건 비교"]
+        L --> M{"조건 만족?"}
+        M -- 예 --> N["선택 컬럼만 탭 구분 출력"]
+        M -- 아니오 --> J
+        N --> J
+        J -- EOF --> O[완료]
     end
 ```
+
+**validate_where_clause()가 하는 일:**
+
+- `WHERE`에 적은 컬럼이 스키마에 실제로 있는지 확인합니다.
+- 리터럴 타입이 스키마 타입과 맞는지 확인합니다.
+- `int` 컬럼 비교일 때는 `strtol()`로 실제 `int` 범위 안에 들어오는지도 같이 확인합니다.
 
 **parse_csv_line() 가 처리하는 CSV 형식:**
 
@@ -595,6 +654,15 @@ make clean    # build/ 삭제
   examples/demo.sql
 ```
 
+`WHERE` 예시를 바로 실행해 보고 싶다면 아래 파일을 사용하면 됩니다.
+
+```bash
+./build/sqlproc \
+  --schema-dir examples/schemas \
+  --data-dir   /tmp/data \
+  examples/where_demo.sql
+```
+
 인자 설명:
 
 | 인자 | 설명 |
@@ -621,6 +689,12 @@ SELECT * FROM users;
 SELECT id, name FROM users;
 ```
 
+```sql
+-- examples/where_demo.sql
+SELECT name, age FROM users WHERE age >= 25;
+SELECT id, name FROM users WHERE age >= 25 AND name = 'lee';
+```
+
 ### 실행 결과
 
 ```
@@ -632,6 +706,12 @@ id	name
 1	kim
 2	lee
 3	park
+```
+
+실행이 끝나면 결과 표는 `stdout`에, 총 실행 시간은 `stderr`에 각각 출력됩니다.
+
+```text
+총 실행 시간: 0.284 ms
 ```
 
 ---
