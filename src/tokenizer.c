@@ -60,16 +60,8 @@ static TokenType keyword_type(const char *text)
         return TOKEN_KEYWORD_AND;
     }
 
-    if (strcmp(text, "create") == 0) {
-        return TOKEN_KEYWORD_CREATE;
-    }
-
-    if (strcmp(text, "index") == 0) {
-        return TOKEN_KEYWORD_INDEX;
-    }
-
-    if (strcmp(text, "on") == 0) {
-        return TOKEN_KEYWORD_ON;
+    if (strcmp(text, "or") == 0) {
+        return TOKEN_KEYWORD_OR;
     }
 
     return TOKEN_IDENTIFIER;
@@ -114,7 +106,7 @@ static int read_word(const char *sql_text,
 
     /*
      * 알파벳/숫자/밑줄로 이어진 단어를 읽습니다.
-     * 예: users, idx_users_age, select
+     * 예: users, select
      */
     start = *index;
     while (isalnum((unsigned char)sql_text[*index]) || sql_text[*index] == '_') {
@@ -219,7 +211,7 @@ static int read_symbol(const char *sql_text,
 
     /*
      * 기호 토큰을 읽습니다.
-     * 한 글자 기호와 두 글자 비교 연산자(<=, >=)를 모두 처리합니다.
+     * 지원 기호: , ; ( ) * = < <= > >=
      */
     text[0] = sql_text[*index];
     text[1] = '\0';
@@ -255,26 +247,24 @@ static int read_symbol(const char *sql_text,
         return append_token(tokens, TOKEN_EQUAL, text, line, column, error);
     }
 
-    if (sql_text[*index] == '<' && sql_text[*index + 1] == '=') {
-        text[1] = '=';
-        text[2] = '\0';
-        *index += 2;
-        return append_token(tokens, TOKEN_LESS_EQUAL, text, line, column, error);
-    }
-
-    if (sql_text[*index] == '>' && sql_text[*index + 1] == '=') {
-        text[1] = '=';
-        text[2] = '\0';
-        *index += 2;
-        return append_token(tokens, TOKEN_GREATER_EQUAL, text, line, column, error);
-    }
-
     if (sql_text[*index] == '<') {
+        if (sql_text[*index + 1] == '=') {
+            text[1] = '=';
+            *index += 2;
+            return append_token(tokens, TOKEN_LESS_EQUAL, text, line, column, error);
+        }
+
         *index += 1;
         return append_token(tokens, TOKEN_LESS, text, line, column, error);
     }
 
     if (sql_text[*index] == '>') {
+        if (sql_text[*index + 1] == '=') {
+            text[1] = '=';
+            *index += 2;
+            return append_token(tokens, TOKEN_GREATER_EQUAL, text, line, column, error);
+        }
+
         *index += 1;
         return append_token(tokens, TOKEN_GREATER, text, line, column, error);
     }
@@ -324,7 +314,8 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
         }
 
         if (isdigit((unsigned char)sql_text[index]) ||
-            (sql_text[index] == '-' && isdigit((unsigned char)sql_text[index + 1]))) {
+            (sql_text[index] == '-' && sql_text[index + 1] != '\0' &&
+             isdigit((unsigned char)sql_text[index + 1]))) {
             if (!read_number(sql_text, &index, line, column, tokens, error)) {
                 return 0;
             }
@@ -352,106 +343,4 @@ int tokenize_sql(const char *sql_text, TokenList *tokens, ErrorInfo *error)
     }
 
     return append_token(tokens, TOKEN_EOF, "", line, column, error);
-}
-
-const char *token_type_name(TokenType type)
-{
-    /* 디버깅과 테스트에서 읽기 쉬운 토큰 이름 문자열입니다. */
-    if (type == TOKEN_EOF) {
-        return "EOF";
-    }
-
-    if (type == TOKEN_IDENTIFIER) {
-        return "IDENTIFIER";
-    }
-
-    if (type == TOKEN_NUMBER) {
-        return "NUMBER";
-    }
-
-    if (type == TOKEN_STRING) {
-        return "STRING";
-    }
-
-    if (type == TOKEN_COMMA) {
-        return "COMMA";
-    }
-
-    if (type == TOKEN_SEMICOLON) {
-        return "SEMICOLON";
-    }
-
-    if (type == TOKEN_LPAREN) {
-        return "LPAREN";
-    }
-
-    if (type == TOKEN_RPAREN) {
-        return "RPAREN";
-    }
-
-    if (type == TOKEN_STAR) {
-        return "STAR";
-    }
-
-    if (type == TOKEN_EQUAL) {
-        return "EQUAL";
-    }
-
-    if (type == TOKEN_LESS) {
-        return "LESS";
-    }
-
-    if (type == TOKEN_LESS_EQUAL) {
-        return "LESS_EQUAL";
-    }
-
-    if (type == TOKEN_GREATER) {
-        return "GREATER";
-    }
-
-    if (type == TOKEN_GREATER_EQUAL) {
-        return "GREATER_EQUAL";
-    }
-
-    if (type == TOKEN_KEYWORD_INSERT) {
-        return "INSERT";
-    }
-
-    if (type == TOKEN_KEYWORD_INTO) {
-        return "INTO";
-    }
-
-    if (type == TOKEN_KEYWORD_VALUES) {
-        return "VALUES";
-    }
-
-    if (type == TOKEN_KEYWORD_SELECT) {
-        return "SELECT";
-    }
-
-    if (type == TOKEN_KEYWORD_FROM) {
-        return "FROM";
-    }
-
-    if (type == TOKEN_KEYWORD_WHERE) {
-        return "WHERE";
-    }
-
-    if (type == TOKEN_KEYWORD_AND) {
-        return "AND";
-    }
-
-    if (type == TOKEN_KEYWORD_CREATE) {
-        return "CREATE";
-    }
-
-    if (type == TOKEN_KEYWORD_INDEX) {
-        return "INDEX";
-    }
-
-    if (type == TOKEN_KEYWORD_ON) {
-        return "ON";
-    }
-
-    return "UNKNOWN";
 }

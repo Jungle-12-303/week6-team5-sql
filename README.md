@@ -1,214 +1,314 @@
-# 초심자 친화형 C99 SQL 처리기
+# `week6-team5-sql`
 
-CLI에서 SQL을 계속 입력하며 실행할 수 있는 작은 SQL 처리기입니다.
-초심자가 읽기 쉽도록 `C99`의 기본 문법만 사용했고, 어려운 흐름에는
-한국어 주석을 붙였습니다.
+> SQL 처리 과정을 가장 작은 범위로 압축해, 내부 흐름이 보이도록 만든 교육용 SQL 처리기
 
 ## 한눈에 보기
 
-- 지원 문장: `INSERT`, `SELECT`, `CREATE INDEX`
-- `WHERE`는 최대 2개 조건과 `AND`만 지원
-- 데이터 저장: `CSV`
-- 인덱스 저장: 디스크 영속형 `B+ 트리` `.idx`
-- 빌드 기준: `-std=c99 -Wall -Wextra -Werror`
+| 항목      | 내용                                         |
+| --------- | -------------------------------------------- |
+| 목표      | SQL 실행 흐름을 초심자도 따라갈 수 있게 구현 |
+| 입력      | `.sql` 파일                                  |
+| 출력      | 표준 출력 + `.csv` 파일                      |
+| 지원 문장 | `INSERT`, `SELECT`, `SELECT ... WHERE`      |
+| 저장 방식 | `CSV`                                        |
+| 스키마    | `<table>.schema`                             |
+
+## 시스템 구조
+
+```mermaid
+flowchart LR
+    A["SQL File"] --> B["Tokenizer"]
+    B --> C["Parser"]
+    C --> D["Executor"]
+    D -->|"load_table_schema()"| E["schema.c"]
+    D -->|"storage_append_row()\nstorage_print_rows()"| F["storage.c"]
+    E --> G["Schema File"]
+    F --> H["CSV File"]
+```
+
+## 실행 흐름
+
+```mermaid
+flowchart LR
+    A["main.c"] --> B["app.c"]
+    B --> C["tokenizer.c"]
+    C --> D["parser.c"]
+    D --> E["executor.c"]
+    E --> F["schema.c"]
+    E --> G["storage.c"]
+```
+
+| 단계 | 함수 / 파일 | 핵심 역할 |
+| --- | --- | --- |
+| 1 | `main.c` | 프로그램 진입점 |
+| 2 | `app.c` | SQL 파일 읽기, 전체 실행 제어 |
+| 3 | `tokenizer.c` | SQL 문자열을 토큰 배열로 분리 |
+| 4 | `parser.c` | 토큰 배열을 `SqlProgram`으로 변환 |
+| 5 | `executor.c` + `storage.c` + `schema.c` | 스키마 확인 후 출력/CSV 반영 |
+
+### 단계별 예시 이미지
+
+### 1. `tokenizer.c`
+
+```mermaid
+flowchart LR
+    A["SELECT name, age FROM users WHERE age >= 25;"] --> B["[SELECT] [name] [,] [age] [FROM] [users] [WHERE] [age] [>=] [25] [;]"]
+```
+
+### 2. `parser.c` - SELECT
+
+```mermaid
+flowchart LR
+    A["[SELECT] [name] [,] [age] [FROM] [users] [WHERE] [age] [>=] [25] [;]"] --> B["Statement<br/>type = SELECT"]
+    B --> C["SelectStatement<br/>table_name = users<br/>select_all = 0<br/>column_names = [name, age]<br/>where_clause = [age >= 25]"]
+```
+
+### 3. `executor.c` + `storage.c` - SELECT
+
+```mermaid
+flowchart LR
+    A["SelectStatement<br/>table = users<br/>columns = [name, age]<br/>where = age >= 25"] --> B["load_table_schema()"]
+    B --> C["users.schema 확인<br/>id, name, age"]
+    C --> D["resolve_selected_columns()<br/>validate_where_clause()"]
+    D --> E["storage_print_rows()<br/>full scan + WHERE 비교"]
+    E --> F["조건에 맞는 행만 출력"]
+```
+
+### 4. `parser.c` - INSERT
+
+```mermaid
+flowchart LR
+    A["INSERT INTO users (name, age, id) VALUES ('lee', 30, 2);"] --> B["Statement<br/>type = INSERT"]
+    B --> C["InsertStatement<br/>table_name = users<br/>column_names = [name, age, id]<br/>values = ['lee', 30, 2]"]
+```
+
+### 5. `executor.c` + `storage.c` - INSERT
+
+```mermaid
+flowchart LR
+    A["InsertStatement<br/>name, age, id"] --> B["load_table_schema()"]
+    B --> C["users.schema 확인<br/>id, name, age"]
+    C --> D["build_insert_row_values()"]
+    D --> E["2, lee, 30 재배치"]
+    E --> F["storage_append_row()"]
+    F --> G["2,lee,30 저장"]
+```
+
+## 핵심 구조체
+
+| 구조체 | 역할 | 생성 단계 | 포함 |
+| --- | --- | --- | --- |
+| `TokenList` | SQL 문자열을 잘라낸 토큰 배열 | `tokenizer.c` | `Token[]` |
+| `SqlProgram` | 파싱된 SQL 문장 목록 | `parser.c` | `Statement[]` |
+| `Statement` | `INSERT` / `SELECT` 구분 단위 | `parser.c` | `InsertStatement` or `SelectStatement` |
+| `InsertStatement` | 테이블명, 컬럼명[], 값[] | `parser.c` | `LiteralValue[]` |
+| `SelectStatement` | 테이블명, `select_all`, 컬럼명[], `where_clause` | `parser.c` | `WhereClause` |
+| `WhereClause` | WHERE 조건 묶음 | `parser.c` | `Predicate[]` |
+| `TableSchema` | 컬럼 순서·타입 정의 | `schema.c` | `ColumnSchema[]` |
+| `ErrorInfo` | 오류 메시지 + 위치 | 전 단계 공용 | — |
+
+### 구조체를 사용하는 이유
+
+- tokenizer 결과와 parser 결과를 단계별로 분리해서 저장하기 위해 사용했습니다.
+- `INSERT`, `SELECT`를 문자열이 아니라 정리된 데이터 형태로 넘기기 위해 사용했습니다.
+- executor가 스키마 기준으로 컬럼 순서와 타입을 확인하기 쉽게 만들기 위해 사용했습니다.
+- 오류가 어느 단계에서 났는지 같은 형식으로 기록하기 위해 사용했습니다.
+
+### 구조체를 사용했을 때 장점
+
+- 각 단계가 어떤 데이터를 받고 어떤 데이터를 만드는지 바로 보입니다.
+- tokenizer, parser, executor 역할이 섞이지 않습니다.
+- `INSERT`, `SELECT` 문장을 같은 `Statement` 단위로 관리할 수 있습니다.
+- 디버깅할 때 문자열 전체를 다시 읽지 않고, 정리된 결과만 보면 됩니다.
+- 발표에서도 "문자열 -> 토큰 -> 문장 구조체 -> 실행" 흐름을 설명하기 쉽습니다.
 
 ## 지원 SQL
 
 ```sql
 INSERT INTO users VALUES (1, 'kim', 20);
-INSERT INTO users (id, name, age) VALUES (2, 'lee', 30);
+INSERT INTO users (name, id, age) VALUES ('lee', 2, 30);
 SELECT * FROM users;
-SELECT name, age FROM users WHERE age >= 20;
-SELECT * FROM users WHERE age >= 20 AND id = 1;
-CREATE INDEX idx_users_age ON users(age);
+SELECT name, age FROM users;
+SELECT name, age FROM users WHERE age >= 25;
+SELECT * FROM users WHERE age >= 25 AND name = 'lee';
 ```
 
-## 지원 범위
+## WHERE 범위
 
-- 단일 테이블만 처리합니다.
-- `WHERE`는 조건 1개 또는 2개만 허용합니다.
-- 비교 연산자는 `=`, `<`, `<=`, `>`, `>=`만 지원합니다.
-- 지원 타입은 `int`, `string` 두 가지입니다.
-- 문자열 최대 길이는 63자입니다.
+- 현재 `WHERE`는 full scan 방식으로만 동작합니다.
+- 비교 연산자는 `=`, `<`, `<=`, `>`, `>=`를 지원합니다.
+- 조건은 최대 2개까지 `AND`로 연결할 수 있습니다.
+- `OR`와 인덱스 기반 조회는 아직 지원하지 않습니다.
 
-## 지원하지 않는 기능
+## 실행 시간 출력
 
-- `OR`
-- `JOIN`
-- `ORDER BY`
-- `UPDATE`
-- `DELETE`
-- `CREATE TABLE`
-- 복합 인덱스
+- CLI는 SQL 파일 1회 실행이 끝나면 `stderr`에 총 실행 시간을 출력합니다.
+- SELECT 결과는 기존처럼 `stdout`에만 출력되므로 결과 파싱과 성능 로그를 분리할 수 있습니다.
 
-## 디렉터리 구조
+예시:
+
+`stdout`
 
 ```text
-include/
-  sqlproc.h
-src/
-  app.c
-  tokenizer.c
-  parser.c
-  schema.c
-  executor.c
-  btree_index.c
-tests/
-  test_runner.c
-examples/
-  demo.sql
-  schemas/users.schema
-docs/session-logs/
+name    age
+lee     30
 ```
 
-## 빌드와 테스트
+`stderr`
 
-```bash
-make
-make test
+```text
+총 실행 시간: 0.284 ms
 ```
 
-- 실행 파일은 `build/sqlproc`에 생성됩니다.
-- 테스트는 `build/test_runner`를 실행합니다.
+## 시연 예시
 
-## 빠른 실행 예시
-
-먼저 예제용 데이터 디렉터리와 인덱스 디렉터리를 만듭니다.
-
-```bash
-mkdir -p ./demo-data ./demo-indexes
-./build/sqlproc \
-  --schema-dir ./examples/schemas \
-  --data-dir ./demo-data \
-  --index-dir ./demo-indexes
-```
-
-프롬프트가 뜨면 아래처럼 문장을 계속 입력합니다.
+![시연 예시](./docs/images/demo-run.png)
 
 ```sql
 INSERT INTO users VALUES (1, 'kim', 20);
-INSERT INTO users VALUES (2, 'lee', 30);
-CREATE INDEX idx_users_age ON users(age);
+INSERT INTO users (name, age, id) VALUES ('lee', 30, 2);
+INSERT INTO users VALUES (3, 'park', 27);
+INSERT INTO users (age, id, name) VALUES (41, 4, 'choi');
+INSERT INTO users VALUES (5, 'jung', 33);
 SELECT * FROM users;
-quit
+SELECT name, age FROM users;
+SELECT age, id FROM users;
 ```
 
-배치 실행이 필요하면 SQL 파일 경로를 마지막 인자로 넘길 수도 있습니다.
+`WHERE` 예시는 [examples/where_demo.sql](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/examples/where_demo.sql) 파일로 따로 분리했습니다.
 
-```bash
-./build/sqlproc \
-  --schema-dir ./examples/schemas \
-  --data-dir ./demo-data \
-  --index-dir ./demo-indexes \
-  ./examples/demo.sql
+## 우리 팀의 포인트
+
+### 1. tokenizer, parser, executor의 오류를 나눠서 처리
+
+| 단계      | 대표 메시지                            |
+| --------- | -------------------------------------- |
+| Tokenizer | `지원하지 않는 문자를 찾았습니다.`     |
+| Tokenizer | `문자열 리터럴이 닫히지 않았습니다.`   |
+| Parser    | `FROM 키워드가 필요합니다.`            |
+| Parser    | `문장 끝에는 세미콜론이 필요합니다.`   |
+| Parser    | `컬럼 수와 값 수가 일치하지 않습니다.` |
+| Executor  | `INSERT 값 타입이 스키마와 맞지 않습니다.` |
+| Executor  | `SELECT 대상 컬럼이 스키마에 없습니다.` |
+
+```mermaid
+flowchart LR
+    A["입력 SQL"] --> B["Tokenizer 오류<br/>지원하지 않는 문자"]
+    A --> C["Parser 오류<br/>키워드 누락 / 문장 형식 오류"]
+    A --> D["Executor 오류<br/>스키마 불일치 / 타입 오류"]
 ```
 
-예제 실행이 끝나면 아래 파일이 만들어집니다.
+예시:
 
-- `demo-data/users.csv`
-- `demo-indexes/idx_users_age.idx`
+- tokenizer 오류: `SELECT @ FROM users;`
+- parser 오류: `SELECT name users;`
+- executor 오류: `INSERT INTO users VALUES ('kim', 1, 20);`
 
-## 파일 형식
+### 2. storage.c에서도 파일/CSV 오류를 따로 처리
 
-### 1. 스키마 파일
+| 구분 | 대표 메시지 |
+| --- | --- |
+| Storage | `데이터 파일을 만들 수 없습니다.` |
+| Storage | `기존 데이터 파일 헤더 형식이 잘못되었습니다.` |
+| Storage | `CSV 헤더가 스키마와 다릅니다.` |
+| Storage | `CSV 행을 읽는 중 오류가 발생했습니다.` |
 
-경로 규칙은 `schemas/<table>.schema`입니다.
+```mermaid
+flowchart LR
+    A["storage_append_row()<br/>storage_print_rows()"] --> B["파일 열기 / 헤더 확인"]
+    B --> C["CSV 형식 검증"]
+    C --> D["Storage 오류 메시지 반환"]
+```
+
+예시:
+
+- storage 오류: `데이터 파일을 만들 수 없습니다.`
+- storage 오류: `CSV 헤더가 스키마와 다릅니다.`
+
+### 3. 오류 위치까지 함께 출력
 
 ```text
-id:int:pk,name:string,age:int
+오류: 지원하지 않는 문자를 찾았습니다. (line 1, column 8)
+오류: FROM 키워드가 필요합니다. (line 1, column 13)
 ```
 
-- 컬럼 순서가 CSV 헤더 순서가 됩니다.
-- 타입은 `int` 또는 `string`만 사용합니다.
-- `:pk`를 붙인 컬럼은 PRIMARY KEY로 동작하며 중복 `INSERT`를 막습니다.
+```mermaid
+flowchart LR
+    A["SELECT @ FROM users;"] --> B["line 1, column 8"]
+    C["SELECT name users;"] --> D["line 1, column 13"]
+```
 
-### 2. 데이터 파일
-
-경로 규칙은 `data/<table>.csv`입니다.
+### 4. 스키마를 기준으로 컬럼 순서와 타입을 맞춤
 
 ```text
-id,name,age
-1,kim,20
-2,lee,30
+id:int,name:string,age:int
 ```
 
-- 첫 줄은 항상 헤더입니다.
-- 첫 `INSERT` 때 파일이 없으면 헤더를 자동으로 만듭니다.
+- 컬럼 순서를 통일합니다.
+- `int`, `string` 타입을 검증합니다.
+- 사용자가 컬럼 순서를 바꿔도 schema 기준으로 다시 맞춥니다.
 
-### 3. 인덱스 파일
+```mermaid
+flowchart LR
+    A["INSERT INTO users (name, id, age) VALUES ('kim', 1, 20)"] --> B["schema 확인"]
+    B --> C["id, name, age 순서로 재배치"]
+    C --> D["1,kim,20 저장"]
+```
 
-경로 규칙은 `indexes/<index_name>.idx`입니다.
+### 5. executor와 storage를 분리해 역할을 명확히 구분
 
-- 헤더 1개와 고정 크기 노드 배열로 저장합니다.
-- leaf 노드는 `key`, `row_offset`, `next_leaf_id`를 저장합니다.
-- internal 노드는 `key`, `child_id`를 저장합니다.
+```mermaid
+flowchart LR
+    subgraph executor["executor.c — SQL 로직"]
+        E1["타입·이름 검증"]
+        E2["컬럼 순서 재배치"]
+    end
+    subgraph storage["storage.c — 파일 입출력"]
+        S1["CSV 헤더 생성·검증"]
+        S2["행 읽기·쓰기"]
+    end
+    executor -->|"두 함수로만 연결"| storage
+```
 
-## B+ 트리 동작 설명
+- `storage_append_row()` — INSERT 시 CSV에 한 행 추가
+- `storage_print_rows()` — SELECT 시 해당 컬럼만 출력
+- storage.c를 교체해도 executor.c를 건드릴 필요가 없음
 
-이 프로젝트의 B+ 트리는 성능보다 이해 가능성을 우선합니다.
+## 협업과 회고
 
-- 한 노드가 가질 수 있는 최대 키 수는 `4`입니다.
-- 키가 넘치면 leaf 또는 internal 노드를 둘로 나눕니다.
-- 가운데 기준 키 하나를 부모로 올립니다.
-- 부모도 가득 차 있으면 같은 과정을 위로 반복합니다.
-- 맨 위 부모까지 올라갔는데 더 올라갈 곳이 없으면 새 루트를 만듭니다.
+| 주제      | 내용                                                                  |
+| --------- | --------------------------------------------------------------------- |
+| 리뷰 방식 | `AGENTS.md`의 멀티 페르소나 관점을 참고해 에이전트를 리뷰어처럼 활용  |
+| 협업 방식 | 한 컴퓨터에서 상세 프롬프트를 작성하고 같은 환경에서 바로 빌드·테스트 |
+| 효과      | 정확성, 자료구조 일관성, 초심자 가독성을 분리해 점검 가능             |
 
-초심자가 흐름을 따라가기 쉽도록 재귀보다 반복문과 경로 배열을 더 많이
-사용했습니다.
+### 작업 플로우
 
-## 실행 흐름
+```mermaid
+flowchart TD
+    START([새 작업 시작]) --> CHECK
 
-프로그램은 아래 순서로 동작합니다.
+    subgraph CHECK["① 작업 전 확인"]
+        C1["git status / log 확인"]
+        C2["README · session-logs 확인"]
+        C1 --> C2
+    end
 
-1. CLI 입력 또는 SQL 파일에서 문장을 읽습니다.
-2. 토큰으로 나눕니다.
-3. 수동 파서로 AST를 만듭니다.
-4. 실행기가 문장 종류에 따라 파일 입출력을 수행합니다.
-5. PK가 있으면 `INSERT` 전에 중복 키를 검사합니다.
-6. 인덱스가 있으면 row offset 후보를 먼저 모으고, 나머지 조건은 다시 검사합니다.
+    CHECK --> DEV["② 기능 브랜치에서 개발<br/>-std=c99 -Wall -Wextra -Werror"]
+    DEV --> TEST["③ make + make test"]
+    TEST --> REVIEW
 
-## 초심자에게 중요한 코드 읽기 포인트
+    subgraph REVIEW["④ 멀티 페르소나 코드 리뷰"]
+        direction LR
+        R1["정확성 · 버그"]
+        R2["자료구조 무결성"]
+        R3["초심자 가독성 · C99"]
+    end
 
-- [src/parser.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/src/parser.c)
-  `INSERT`, `SELECT`, `CREATE INDEX`를 수동 파싱합니다.
-- [src/executor.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/src/executor.c)
-  CSV 저장과 `WHERE` 비교, 실패 시 롤백을 담당합니다.
-- [src/btree_index.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/src/btree_index.c)
-  B+ 트리 삽입, split, 인덱스 조회를 담당합니다.
-- [tests/test_runner.c](/Users/donghyunkim/Downloads/test_sql/week6-team5-sql/tests/test_runner.c)
-  기능별 테스트 흐름을 한 파일에서 따라갈 수 있습니다.
-
-## Git 브랜치와 GitHub 절차
-
-이 저장소는 아래 규칙으로 개발합니다.
-
-- 기본 브랜치: `main`
-- 개발 통합 브랜치: `dev`
-- 기능 브랜치: `feature/<기능명>`
-
-모든 merge 전에는 아래 순서를 지킵니다.
-
-1. 세션 로그를 Markdown 파일로 기록합니다.
-2. 멀티 페르소나 코드 리뷰를 진행합니다.
-3. GitHub Issue를 새로 만듭니다.
-4. 이슈를 `6주차 5조 미니 SQL 처리기 보드`에 추가합니다.
-5. 이슈 코멘트에 한국어 검증 결과를 남깁니다.
-6. PR을 생성합니다.
-7. 테스트 통과 후 merge합니다.
-
-## 현재 테스트 범위
-
-- 인자 파싱
-- 토크나이저
-- `INSERT`, `SELECT`, `CREATE INDEX` 파서
-- 빈 SQL 파일 오류
-- CSV 기반 `INSERT`와 `SELECT WHERE`
-- 인덱스 생성과 재실행 후 조회
-- 중복 키와 split 뒤 equality 조회
-
-## 제한 사항
-
-- 인덱스 스캔은 가독성을 위해 모든 leaf 노드를 읽고 후보를 모읍니다.
-- 통계 기반 옵티마이저는 없습니다.
-- 인덱스는 단일 컬럼만 지원합니다.
-- 저장소는 append-only이며 `UPDATE`, `DELETE`는 구현하지 않았습니다.
+    REVIEW --> LOG["⑤ 세션 로그 작성<br/>docs/session-logs/YYYY-MM-DD_...md"]
+    LOG --> ISSUE["⑥ GitHub Issue 생성<br/>검증 범위 · 발견 문제 · 남은 리스크"]
+    ISSUE --> PR["⑦ PR 생성"]
+    PR --> PASS{"테스트 통과?"}
+    PASS -->|Yes| MERGE([기능 브랜치 → dev merge])
+    PASS -->|No| DEV
+```
